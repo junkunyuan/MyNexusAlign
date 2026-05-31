@@ -53,53 +53,71 @@ def dist_safe_exit(exit_code: int = 0, message: str = "") -> None:
     os._exit(exit_code)
 
 
-def all_reduce_tensor(
+def all_reduce(
     x: int | float | list | torch.Tensor,
-    op: str
+    op: str = "sum",
 ) -> int | float | list | torch.Tensor:
-    """All-reduce a value across ranks and return in the original type.
+    """All-reduce a Python scalar, list, or tensor across distributed ranks.
 
-    Every rank must call this with the same python type, shape, and dtype,
-    otherwise all_reduce will mismatch or deadlock.
+    It performs an in-place ``torch.distributed.all_reduce`` on an internal 
+    tensor copy and returns the reduced result without modifying the input.
 
-    Note: a float64 tensor keeps its dtype, but a python ``float`` is reduced as
-    float32 (torch's default dtype) for sum/max/min, so it loses double precision.
-    Pass a float64 tensor if you need full precision.
+    Supported operations are ``sum``, ``mean``, ``max``, and ``min``.
+    ``mean`` is implemented as ``SUM / world_size`` for backend compatible.
+
+    Notes:
+        * All ranks must call it with the same input type, shape, and dtype.
+        * ``x`` will be returned on their original data type and device.
+        * int inputs with ``op="mean"`` return floating-point results.
 
     Args:
-        x: The value to all-reduce. Supported types: int, float, list, torch.Tensor.
-        op: The operation to perform. Supported: "sum", "mean", "max", "min".
+        x: Input. Support: ``int``, ``float``, ``list``, and ``torch.Tensor``.
+        op: Reduction operation. Support: ``sum``, ``mean``, ``max``, and ``min``.
 
     Returns:
-        The all-reduced value in the original data type.
+        The reduced value, converted back to the original data type and device.
     """
-    ori_type = type(x)
-    assert ori_type in (int, float, list, torch.Tensor), f"❌ Invalid type: {ori_type}"
+    if op not in {"sum", "mean", "max", "min"}:
+        raise ValueError(f"❌ Invalid all_reduce op: {op}")
 
-    reduce_op_map = {
+    if not isinstance(x, (int, float, list, torch.Tensor)):
+        raise TypeError(f"❌ Unsupported input type: {type(x)}")
+
+    reduce_op = {
         "sum": dist.ReduceOp.SUM,
-        "mean": dist.ReduceOp.AVG,
+        "mean": dist.ReduceOp.SUM,
         "max": dist.ReduceOp.MAX,
         "min": dist.ReduceOp.MIN,
-    }
-    assert op in reduce_op_map, f"❌ Invalid operation: {op}"
+    }[op]
 
-    if isinstance(x, torch.Tensor):
-        ori_device = x.device
-        # clone() so the in-place all_reduce never mutates the caller's tensor
-        tensor = x.clone() if x.is_cuda else x.cuda()
+    world_size = dist.get_world_size()
+
+    is_tensor = isinstance(x, torch.Tensor)
+    ori_device = x.device if is_tensor else None
+    ori_dtype = x.dtype if is_tensor else None
+
+    if is_tensor:
+        tensor = x.detach().clone().cuda()
     else:
-        # Use float for "mean" so integer inputs are not truncated by AVG.
-        dtype = torch.float64 if op == "mean" else None
-        tensor = torch.as_tensor(x, device="cuda", dtype=dtype)
+        tensor = torch.as_tensor(x, device="cuda")
 
-    dist.all_reduce(tensor, op=reduce_op_map[op])
+    if op == "mean" and not tensor.is_floating_point():
+        tensor = tensor.float()
 
-    if ori_type is torch.Tensor:
-        return tensor.to(ori_device)
-    elif ori_type is int:
-        return int(tensor.item())
-    elif ori_type is float:
+    dist.all_reduce(tensor, op=reduce_op)
+
+    if op == "mean":
+        tensor = tensor / world_size
+
+    if is_tensor:
+        if op == "mean" and not ori_dtype.is_floating_point():
+            return tensor.to(device=ori_device)
+        return tensor.to(device=ori_device, dtype=ori_dtype)
+
+    if isinstance(x, int):
+        return float(tensor.item()) if op == "mean" else int(tensor.item())
+
+    if isinstance(x, float):
         return float(tensor.item())
-    elif ori_type is list:
-        return tensor.tolist()
+
+    return tensor.tolist()
