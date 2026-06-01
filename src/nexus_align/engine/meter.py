@@ -4,43 +4,78 @@ import os
 import time
 import threading
 from collections import deque
+from dataclasses import dataclass
 
 import torch
 import psutil
 import pynvml
 
-
 GB = 1024**3
+
+
+@dataclass
+class Meter:
+    """A single windowed metric: a bounded value history plus its running mean.
+
+    precision/notation control display: notation "e" prints scientific form
+    (precision=2 -> 2.34e-02), "f" prints fixed-point (precision=4 -> 0.0234).
+    """
+
+    window_size: int
+    precision: int = 2
+    notation: str = "e"
+    report_mean: bool = True
+
+    def __post_init__(self) -> None:
+        self.data: deque = deque(maxlen=self.window_size)
+        self.mean: float | None = None
+
+    @property
+    def latest(self) -> float | None:
+        return self.data[-1] if self.data else None
+
+    def update(self, value: int | float) -> None:
+        """Append a value and refresh the window mean."""
+        self.data.append(value)
+        self.mean = sum(self.data) / len(self.data)
+
+    def update_peak(self, value: int | float) -> None:
+        """Append the running maximum (windows of size 1 keep a single peak)."""
+        self.update(value if not self.data else max(self.data[-1], value))
+
+    def reset(self) -> None:
+        """Clear the history while keeping the window size."""
+        self.data.clear()
+        self.mean = None
 
 
 class WindowMeter:
     """A timer and tracker for training information over a sliding window."""
 
     def __init__(self, hardware: bool = True) -> None:
-        self.meters = {
-            "exp_start_time": None,
-            "total_step": 0,
-            "current_train_steps": 0,
-        }
+        self.meters: dict[str, Meter] = {}
+        self.hardware_meters: set[str] = set()
+        self.timing_meters = {"epoch", "step"}
 
-        self.hardware_meters = set()
+        # Cumulative counters (plain values, not windowed meters).
+        self.epoch = 0
+        self.step = 0
+        self.total_step = 0
+        self.current_train_steps = 0  # steps in this run
+        self.exp_start_time = None
+        self._epoch_start = None
+        self._step_start = None
+
+        # Hardware monitoring (deps lazily imported; only set up when requested).
         self._hardware_monitoring = False
+        self._monitor_thread = None
+        self._stop_monitoring = threading.Event()
+        self._pynvml = None
+        self._psutil = None
+        self.device_id = None
+        self.nvml_handle = None
         if hardware:
-            self.device_id = torch.cuda.current_device()
-
-            # Get nvml handle
-            pynvml.nvmlInit()
-            physical_idx = self.device_id
-            visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-            if visible is not None:
-                visible = [int(x) for x in visible.split(",")]
-                physical_idx = visible[self.device_id]
-            self.nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(physical_idx)
-
-            self._monitor_thread = None
-            self._stop_monitoring = threading.Event()
-            self.hardware_meters = self._init_hardware_meters()
-            self.start_hardware_monitoring()
+            self._setup_hardware()
 
     # ----------------------------------------
     # Meter Utilities
@@ -49,115 +84,105 @@ class WindowMeter:
         self,
         meter: str,
         window_size: int,
-        decimal: int = 6,
+        precision: int = 2,
+        notation: str = "e",
         report_mean: bool = True,
     ) -> None:
-        """Add a new meter."""
-        self.meters[meter] = {
-            "data": deque(maxlen=window_size),
-            "mean": "N/A",
-            "report_mean": report_mean,
-            "decimal": decimal,
-        }
+        """Register a new windowed meter.
 
-    def update_mean(self, meter: str) -> None:
-        """Update the mean of a meter."""
-        data_list = list(self.meters[meter]["data"])
-        self.meters[meter]["mean"] = sum(data_list) / len(data_list)
+        ``precision`` is the number of mantissa digits in scientific notation
+        (``notation``="e", the default for experiment metrics) or the decimal
+        places in fixed-point (``notation``="f").
+        """
+        self.meters[meter] = Meter(window_size, precision, notation, report_mean)
 
     def update(self, meter: str, value: int | float) -> None:
-        """Append a value to the meter. Only int and float are accepted."""
+        """Append a value to a meter. Only int and float are accepted."""
         if not isinstance(value, (int, float)):
-            raise TypeError(f"Expect int or float, got {type(value).__name__}. ")
-        self.meters[meter]["data"].append(value)
-        self.update_mean(meter)
+            raise TypeError(f"❌ Expected int or float, got {type(value).__name__}")
+        self.meters[meter].update(value)
 
-    def latest_exp_info(self) -> dict:
-        """Return the latest value for each experiment meter."""
-        exp_info = {}
-        for k, v in self.meters.items():
-            if (
-                isinstance(v, dict)
-                and k not in self.hardware_meters
-                and "step" not in k
-                and "epoch" not in k
-            ):
-                data_list = list(v["data"])
-                data = data_list[-1] if len(data_list) > 0 else 0
-                exp_info[k] = data
-        return exp_info
+    def update_peak(self, meter: str, value: int | float) -> None:
+        """Append the running maximum of a meter."""
+        self.meters[meter].update_peak(value)
+
+    def _experiment_meters(self):
+        """Yield (name, meter) for user metrics, excluding hardware/timing meters."""
+        for name, meter in self.meters.items():
+            if name not in self.hardware_meters and name not in self.timing_meters:
+                yield name, meter
+
+    def latest_metrics(self) -> dict:
+        """Return the latest value of each experiment metric (0 if empty)."""
+        return {
+            name: (meter.latest if meter.latest is not None else "NaN")
+            for name, meter in self._experiment_meters()
+        }
 
     # ----------------------------------------
     # Hardware Monitoring
     # ----------------------------------------
-    def _init_hardware_meters(self, log_every_n_seconds: int = 3600) -> list[str]:
-        """Initialize hardware monitoring meters."""
-        hardware_meters = [
-            # GPU memory meters (GB)
-            "gpu_mem_used", "gpu_mem_peak", "gpu_mem_total",
-            # GPU utilization meters (%)
-            "gpu_util", "gpu_util_peak",
-            # CPU memory meters (GB)
-            "cpu_mem_used", "cpu_mem_peak", "cpu_mem_total",
-            # CPU utilization meters (%)
-            "cpu_util", "cpu_util_peak",
+    def _setup_hardware(self) -> None:
+        """Resolve the NVML handle, and start sampling."""
+        self._psutil = psutil
+        self._pynvml = pynvml
+        psutil.cpu_percent(interval=None)
+
+        self.device_id = torch.cuda.current_device()
+        pynvml.nvmlInit()
+        physical_idx = self.device_id
+        visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if visible is not None:
+            physical_idx = [int(x) for x in visible.split(",")][self.device_id]
+        self.nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(physical_idx)
+
+        self.hardware_meters = self._init_hardware_meters()
+        self.start_hardware_monitoring()
+
+    def _init_hardware_meters(self) -> set[str]:
+        """Register GPU/CPU memory and utilization meters; return their names."""
+        log_window = 3600  # seconds of history kept for non-peak meters
+        names = [
+            "gpu_mem_used", "gpu_mem_peak", "gpu_mem_total",  # GB
+            "gpu_util", "gpu_util_peak",                      # %
+            "cpu_mem_used", "cpu_mem_peak", "cpu_mem_total",  # GB
+            "cpu_util", "cpu_util_peak",                      # %
         ]
+        for name in names:
+            precision = 0 if "util" in name else 1
+            window = 1 if ("peak" in name or "total" in name) else log_window
+            self.add_new_meter(name, window_size=window, precision=precision, notation="f")
 
-        for meter in hardware_meters:
-            decimal = 0 if "util" in meter else 1
-            if "peak" in meter or "total" in meter:
-                window_size = 1
-            else:
-                window_size = log_every_n_seconds
-            self.add_new_meter(meter, window_size=window_size, decimal=decimal)
-
-        # Initialize total values
-        total_gpu_memory = pynvml.nvmlDeviceGetMemoryInfo(self.nvml_handle).total / GB
-        total_cpu_memory = psutil.virtual_memory().total / GB
-        self.meters["gpu_mem_total"]["data"].append(total_gpu_memory)
-        self.meters["cpu_mem_total"]["data"].append(total_cpu_memory)
-
-        return hardware_meters
-
-    def update_peak_status(self, meter: str, value: int | float) -> None:
-        """Update the peak status of a meter."""
-        if len(self.meters[meter]["data"]) == 0:
-            self.update(meter, value)
-        else:
-            current_peak = max(self.meters[meter]["data"][-1], value)
-            self.update(meter, current_peak)
+        self.update("gpu_mem_total", self._pynvml.nvmlDeviceGetMemoryInfo(self.nvml_handle).total / GB)
+        self.update("cpu_mem_total", self._psutil.virtual_memory().total / GB)
+        return set(names)
 
     def _monitor_hardware(self) -> None:
-        """Background thread function to monitor hardware."""
+        """Sample GPU/CPU usage."""
+        nvml, ps = self._pynvml, self._psutil
+        while not self._stop_monitoring.is_set():
+            gpu_mem = nvml.nvmlDeviceGetMemoryInfo(self.nvml_handle).used / GB
+            self.update("gpu_mem_used", gpu_mem)
+            self.update_peak("gpu_mem_peak", gpu_mem)
 
-        def sample():
-            gpu_mem_used = pynvml.nvmlDeviceGetMemoryInfo(self.nvml_handle).used / GB
-            self.update("gpu_mem_used", gpu_mem_used)
-            self.update_peak_status("gpu_mem_peak", gpu_mem_used)
-
-            # GPU utilization
-            gpu_util = pynvml.nvmlDeviceGetUtilizationRates(self.nvml_handle).gpu
+            gpu_util = nvml.nvmlDeviceGetUtilizationRates(self.nvml_handle).gpu
             if gpu_util is not None:
                 self.update("gpu_util", gpu_util)
-                self.update_peak_status("gpu_util_peak", gpu_util)
+                self.update_peak("gpu_util_peak", gpu_util)
 
-            # CPU memory
-            cpu_mem_used = psutil.virtual_memory().used / GB
-            self.update("cpu_mem_used", cpu_mem_used)
-            self.update_peak_status("cpu_mem_peak", cpu_mem_used)
+            cpu_mem = ps.virtual_memory().used / GB
+            self.update("cpu_mem_used", cpu_mem)
+            self.update_peak("cpu_mem_peak", cpu_mem)
 
-            # CPU utilization
-            cpu_util = psutil.cpu_percent(interval=None)
+            cpu_util = ps.cpu_percent(interval=None)
             self.update("cpu_util", cpu_util)
-            self.update_peak_status("cpu_util_peak", cpu_util)
+            self.update_peak("cpu_util_peak", cpu_util)
 
-        while not self._stop_monitoring.is_set():
-            sample()
-            if self._stop_monitoring.wait(1):  # sample for every 1 second
+            if self._stop_monitoring.wait(1):  # sleep 1s, exit early if stopped
                 break
 
     def start_hardware_monitoring(self) -> None:
-        """Start hardware monitoring in background thread."""
+        """Start hardware monitoring in a background thread."""
         if not self._hardware_monitoring:
             self._hardware_monitoring = True
             self._stop_monitoring.clear()
@@ -167,164 +192,112 @@ class WindowMeter:
             self._monitor_thread.start()
 
     def stop_hardware_monitoring(self) -> None:
-        """Stop hardware monitoring thread."""
+        """Stop the monitoring thread and release NVML."""
         if self._hardware_monitoring:
             self._stop_monitoring.set()
             if self._monitor_thread:
                 self._monitor_thread.join(timeout=1)
             self._hardware_monitoring = False
+            if self._pynvml is not None:
+                self._pynvml.nvmlShutdown()
 
     # ----------------------------------------
     # Epoch and Step Meters
     # ----------------------------------------
-    @property
-    def epoch(self) -> int:
-        return self.meters["epoch"]["num"]
-
-    @property
-    def step(self) -> int:
-        return self.meters["step"]["num"]
-
-    @property
-    def total_step(self) -> int:
-        return self.meters["total_step"]
-
-    @property
-    def current_train_steps(self) -> int:
-        return self.meters["current_train_steps"]
-
     def add_epoch_step(self, epoch_window: int = 5, step_window: int = 100) -> None:
-        """Add epoch and step meters."""
-        self.add_new_meter(meter="epoch", window_size=epoch_window, decimal=1)
-        self.meters["epoch"]["start_time"] = None
-        self.meters["epoch"]["num"] = 0
-
-        self.add_new_meter(meter="step", window_size=step_window, decimal=1)
-        self.meters["step"]["start_time"] = None
-        self.meters["step"]["num"] = 0
+        """Register the epoch and step timing meters."""
+        self.add_new_meter("epoch", window_size=epoch_window, precision=1, notation="f")
+        self.add_new_meter("step", window_size=step_window, precision=1, notation="f")
 
     def update_train_state(self, train_state: dict) -> None:
-        """Update the train state."""
-        self.meters["epoch"]["num"] = train_state.get("epoch", 0)
-        self.meters["step"]["num"] = train_state.get("step", 0)
-        self.meters["total_step"] = train_state.get("total_step", 0)
+        """Restore the epoch/step/total_step counters (e.g. after resuming)."""
+        self.epoch = train_state.get("epoch", 0)
+        self.step = train_state.get("step", 0)
+        self.total_step = train_state.get("total_step", 0)
 
     def start(self, meter: str) -> None:
         """Call it at the beginning of every epoch/step."""
-        assert meter in ["step", "epoch"], "meter must be 'step' or 'epoch'"
-        _time = time.time()
-        self.meters[meter]["start_time"] = _time
-        if meter == "epoch" and self.meters["exp_start_time"] is None:
-            self.meters["exp_start_time"] = _time
+        if meter not in self.timing_meters:
+            raise ValueError("❌ Meter must be 'step' or 'epoch'")
+        now = time.time()
+        if meter == "epoch":
+            self._epoch_start = now
+            if self.exp_start_time is None:
+                self.exp_start_time = now
+        else:
+            self._step_start = now
 
     def end(self, meter: str) -> None:
         """Call it at the end of every epoch/step."""
-        assert meter in ["step", "epoch"], "meter must be 'step' or 'epoch'"
-        self.meters[meter]["num"] += 1
-        time_cost = time.time() - self.meters[meter]["start_time"]
-        self.update(meter, time_cost)
-
-        if meter == "step":
-            self.meters["total_step"] += 1
-            self.meters["current_train_steps"] += 1
+        if meter not in self.timing_meters:
+            raise ValueError("❌ meter must be 'step' or 'epoch'")
         if meter == "epoch":
-            self.meters["step"]["num"] = 0
-            maxlen = self.meters["step"]["data"].maxlen
-            self.meters["step"]["data"] = deque(maxlen=maxlen)
+            self.epoch += 1
+            self.update("epoch", time.time() - self._epoch_start)
+            self.step = 0
+            self.meters["step"].reset()
+        else:
+            self.step += 1
+            self.total_step += 1
+            self.current_train_steps += 1
+            self.update("step", time.time() - self._step_start)
 
     # ----------------------------------------
     # Print Meter Information
     # ----------------------------------------
-    def _get_val(self, meter: str, key: str, unit: str = "") -> str:
-        """Get the value to print."""
-        meter_data = self.meters[meter][key]
-        decimal = self.meters[meter]["decimal"]
-        if isinstance(meter_data, deque) and len(meter_data) > 0:
-            meter_data = meter_data[-1]
-        if isinstance(meter_data, (int, float)):
-            return f"{meter_data:.{decimal}f}{unit}"
-        return "N/A"
+    def _fmt(self, meter: str, which: str = "latest", unit: str = "") -> str:
+        """Format a meter's latest value or mean using its precision/notation."""
+        m = self.meters[meter]
+        val = m.latest if which == "latest" else m.mean
+        if not isinstance(val, (int, float)):
+            return "N/A"
+        return f"{val:.{m.precision}{m.notation}}{unit}"
 
-    def info(self, train_info: bool = True, exp_info: bool = True) -> str:
+    def _hardware_info(self) -> list[str]:
+        """One summary line per hardware meter group (used/mean/peak[/total])."""
+        # label, used, peak, total (None if absent), unit
+        specs = [
+            ("gpu_mem", "gpu_mem_used", "gpu_mem_peak", "gpu_mem_total", "G"),
+            ("gpu_uti", "gpu_util", "gpu_util_peak", None, "%"),
+            ("cpu_mem", "cpu_mem_used", "cpu_mem_peak", "cpu_mem_total", "G"),
+            ("cpu_uti", "cpu_util", "cpu_util_peak", None, "%"),
+        ]
+        lines = []
+        for label, used, peak, total, unit in specs:
+            line = (
+                f"{label}: {self._fmt(used, 'latest', unit)} "
+                f"(mean: {self._fmt(used, 'mean', unit)}, "
+                f"peak: {self._fmt(peak, 'latest', unit)}"
+            )
+            if total is not None:
+                line += f", total: {self._fmt(total, 'latest', unit)}"
+            lines.append(line + ")")
+        return lines
+
+    def info(self, train_info: bool = True, show_metrics: bool = True) -> str:
         """Build a human-readable summary string of the meters."""
-        get_info = ""
+        out = ""
 
-        # Get train state information
         if train_info:
-            infos = []
-            infos.append(f"epoch: {self.meters['epoch']['num']}")
-            infos.append(f"step: {self.meters['step']['num']}")
-            infos.append(f"total_step: {self.meters['total_step']}")
-
-            for key in ["epoch", "step"]:
-                avg_time_cost = self.meters[key]["mean"]
-                if isinstance(avg_time_cost, float):
-                    avg_time_cost = f"{avg_time_cost:.{self.meters[key]['decimal']}f}s"
-                infos.append(f"{key}_avg_time_cost: {avg_time_cost}")
-
-            # Get Hardware information
+            infos = [
+                f"epoch: {self.epoch}",
+                f"step: {self.step}",
+                f"total_step: {self.total_step}",
+            ]
+            for key in ("epoch", "step"):
+                infos.append(f"{key}_avg_time_cost: {self._fmt(key, 'mean', 's')}")
             if self._hardware_monitoring:
-                # GPU memory
-                infos.append(
-                    f"gpu_mem: {self._get_val('gpu_mem_used', 'data', unit='G')} "
-                    f"(mean: {self._get_val('gpu_mem_used', 'mean', unit='G')}, "
-                    f"peak: {self._get_val('gpu_mem_peak', 'data', unit='G')}, "
-                    f"total: {self._get_val('gpu_mem_total', 'data', unit='G')})"
-                )
+                infos += self._hardware_info()
+            out += "\n📊 " + "  |  ".join(infos)
 
-                # GPU utilization
-                infos.append(
-                    f"gpu_uti: {self._get_val('gpu_util', 'data', unit='%')} "
-                    f"(mean: {self._get_val('gpu_util', 'mean', unit='%')}, "
-                    f"peak: {self._get_val('gpu_util_peak', 'data', unit='%')})"
-                )
-
-                # CPU memory
-                infos.append(
-                    f"cpu_mem: {self._get_val('cpu_mem_used', 'data', unit='G')} "
-                    f"(mean: {self._get_val('cpu_mem_used', 'mean', unit='G')}, "
-                    f"peak: {self._get_val('cpu_mem_peak', 'data', unit='G')}, "
-                    f"total: {self._get_val('cpu_mem_total', 'data', unit='G')})"
-                )
-
-                # CPU utilization
-                infos.append(
-                    f"cpu_uti: {self._get_val('cpu_util', 'data', unit='%')} "
-                    f"(mean: {self._get_val('cpu_util', 'mean', unit='%')}, "
-                    f"peak: {self._get_val('cpu_util_peak', 'data', unit='%')})"
-                )
-
-            get_info += "\n📊 " + "  |  ".join(infos)
-
-        # Get experiment information
-        if exp_info:
+        if show_metrics:
             infos = []
-            for k, v in self.meters.items():
-                if (
-                    isinstance(v, dict)
-                    and k not in self.hardware_meters
-                    and "step" not in k
-                    and "epoch" not in k
-                ):
-                    data = list(v["data"])
-                    decimal = v["decimal"]
-                    if len(data) > 0:
-                        info = f"{k}: {data[-1]:.{decimal}f}"
-                    else:
-                        info = f"{k}: N/A"
+            for name, meter in self._experiment_meters():
+                latest = self._fmt(name, "latest")
+                if meter.report_mean:
+                    infos.append(f"{name}: {latest} ({self._fmt(name, 'mean')})")
+                else:
+                    infos.append(f"{name}: {latest}")
+            out += "\n📊 " + "  |  ".join(infos)
 
-                    if v.get("report_mean", False):
-                        mean_val = v.get("mean", "N/A")
-                        try:
-                            if hasattr(mean_val, "item"):
-                                mean_val = mean_val.item()
-                            _mean = f"({mean_val:.{decimal}f})"
-                        except (ValueError, TypeError, RuntimeError):
-                            _mean = "(N/A)"
-                        infos.append(f"{info} {_mean}")
-                    else:
-                        infos.append(f"{info}")
-
-            get_info += "\n📊 " + "  |  ".join(infos)
-
-        return get_info
+        return out

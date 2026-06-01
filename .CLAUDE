@@ -1,9 +1,0 @@
-## Docstring
-
-Write concise docstrings. Avoid unnecessary details.
-
-## Comments
-
-Write concise comments on the top of each python file. 
-
-Example format: """Log scalar metrics to Tensorboard and wandb."""
