@@ -110,7 +110,7 @@ def all_reduce(
         tensor = tensor / world_size
 
     if is_tensor:
-        if op == "mean" and not ori_dtype.is_floating_point():
+        if op == "mean" and not ori_dtype.is_floating_point:
             return tensor.to(device=ori_device)
         return tensor.to(device=ori_device, dtype=ori_dtype)
 
