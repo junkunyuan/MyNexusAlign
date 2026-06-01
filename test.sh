@@ -12,6 +12,7 @@ else
 fi
 
 pip install lmdb
+pip install hydra-core
 
 set -e
 cd "$(dirname "$0")"
@@ -20,8 +21,18 @@ export PYTHONPATH="$(pwd)/src:$PYTHONPATH"
 
 export NCCL_DEBUG=WARN
 
+NNODES=$ARNOLD_NUM
+NODE_RANK=$ARNOLD_ID
+NPROC_PER_NODE=$ARNOLD_WORKER_GPU
+MASTER_ADDRESS=$ARNOLD_WORKER_0_HOST
+MASTER_PORT="${ARNOLD_WORKER_0_PORT##*,}"   # 用 PORT1（PORT0 被 sshd 占用）
+NUM_PROCESSES=$((NNODES * NPROC_PER_NODE))
+
 torchrun \
-    --nnodes=1 \
-    --nproc_per_node=8 \
-    --standalone \
+    --nnodes ${NNODES} \
+    --node_rank ${NODE_RANK} \
+    --nproc_per_node ${NPROC_PER_NODE} \
+    --rdzv_backend c10d \
+    --rdzv_endpoint "[${MASTER_ADDRESS}]:${MASTER_PORT}" \
+    --rdzv_id exp \
     src/nexus_align/cli/main.py "$@"
