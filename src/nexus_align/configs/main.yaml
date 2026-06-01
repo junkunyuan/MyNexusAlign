@@ -1,5 +1,9 @@
 # Top-level config loaded by cli/main.py (config_name="main").
 
+defaults:
+  - model: sit
+  - _self_
+
 exp_mode: train  # "train" or "eval"
 
 common:

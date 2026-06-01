@@ -1,6 +1,11 @@
 """CLI entry: Hydra-configured entry point with environment setup."""
 
+import os
+
 import hydra
+
+import nexus_align.models  # noqa: F401  # registers model factories on import
+from nexus_align.registry import registry
 from nexus_align.engine.setup import with_env_setup
 
 
@@ -17,12 +22,15 @@ def main(cfg, env):
     # --------------------------------------------------------------------------------
     # 1. Prepare dataset
     # --------------------------------------------------------------------------------
-    
-    
+
     # --------------------------------------------------------------------------------
     # 2. Prepare models
     # --------------------------------------------------------------------------------
-
+    model = registry.get("model", cfg.model.name)(
+        input_size=cfg.model.resolution // 8,
+        num_classes=cfg.model.num_classes,
+        use_cfg=cfg.model.cfg_prob > 0,
+    ).to(device)
     # --------------------------------------------------------------------------------
     # 3. Prepare algorithms
     # --------------------------------------------------------------------------------

@@ -1,0 +1,6 @@
+# SiT model config (selected by name from the model registry).
+
+name: SiT-XL/2  # one of registry "model" keys: SiT-XL/2, SiT-L/2, SiT-B/2, SiT-B/4
+resolution: 256  # input image resolution; latent size = resolution // 8 (VAE)
+num_classes: 1000
+cfg_prob: 0.1  # label dropout prob for CFG; use_cfg = cfg_prob > 0
