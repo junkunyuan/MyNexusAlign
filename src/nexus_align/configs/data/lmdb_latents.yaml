@@ -3,5 +3,7 @@
 name: lmdb_latents
 lmdb_path: /mnt/hdfs/sg/junkun/data_and_model/open_source/ILSVRC/imagenet-1k/data_MeanFlow/imagenet_train_latents.lmdb     # path to the LMDB latents dataset
 flip_prob: 0.5     # probability of returning horizontally-flipped moments
-batch_size: 256    # global batch size across all ranks
 num_workers: 4
+sample_ratio: 1.0  # fraction of the dataset to use (1.0 = all)
+drop_last: true    # drop the last incomplete batch
+cache_dir: null    # optional local cache directory

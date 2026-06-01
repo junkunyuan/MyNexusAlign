@@ -1,0 +1,5 @@
+name: meanflow
+
+train:
+  train_batch_size: 256
+  grad_accu_step: 1

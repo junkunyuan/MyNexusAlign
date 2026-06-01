@@ -3,6 +3,7 @@
 defaults:
   - model: sit
   - data: lmdb_latents
+  - algorithm: meanflow
   - _self_
 
 exp_mode: train  # "train" or "eval"
