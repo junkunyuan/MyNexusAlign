@@ -1,0 +1,19 @@
+# Top-level config loaded by cli/main.py (config_name="main").
+
+exp_mode: train  # "train" or "eval"
+
+common:
+  seed: 42
+  debug: false
+  debug_console: false
+  deterministic: true
+  time_cost_analysis: false
+
+log:
+  exp_info: default  # experiment identifier
+  log_dir: logs  # base log directory
+  wandb:
+    entity: null
+    project: nexus_align
+    name: null
+    wandb_offline: true
