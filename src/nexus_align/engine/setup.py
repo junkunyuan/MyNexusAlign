@@ -2,15 +2,15 @@
 
 import os
 import pyinstrument
+from typing import Optional
 from dataclasses import dataclass
-from typing import Callable, Optional
 from omegaconf import OmegaConf, open_dict
 
 import torch
 
 from nexus_align.engine.logger import init_log
 from nexus_align.engine.tracker import init_wandb
-from nexus_align.engine.distributed import init_dist_env, dist_safe_exit
+from nexus_align.engine.distributed import init_dist_env
 from nexus_align.utils.seed import set_seed, set_deterministic
 
 
@@ -26,15 +26,8 @@ class EnvContext:
     profiler: Optional[pyinstrument.Profiler]
 
 
-def prepare_env(
-    cfg,
-    *,
-    validator: Optional[Callable[[dict], list]] = None,
-) -> EnvContext:
-    """Prepare common environment: distributed init, logging, seed, config.
-
-    validator: optional callable(cfg_dict) -> list of missing keys; exits if non-empty.
-    """
+def prepare_env(cfg) -> EnvContext:
+    """Prepare common environment: distributed init, logging, seed, config."""
     # Initialize distributed environment
     world_size, rank, device = init_dist_env()
 
@@ -68,7 +61,7 @@ def prepare_env(
 
     # Fix seed
     seed = cfg.common.seed
-    if cfg.name == "train":
+    if cfg.exp_mode == "train":
         seed = cfg.common.seed + rank
         cfg.common.seed = seed
     set_seed(seed)
@@ -81,10 +74,6 @@ def prepare_env(
         print(f"💾 Saved configs to <{config_save_path}>")
 
     cfg_dict = OmegaConf.to_container(cfg)
-    if validator is not None:
-        missing = validator(cfg_dict)
-        if missing:
-            dist_safe_exit(exit_code=1, message=f"❌ Missing config keys: {missing}")
 
     return EnvContext(
         world_size=world_size,
@@ -96,20 +85,14 @@ def prepare_env(
     )
 
 
-def with_env_setup(
-    *,
-    validator: Optional[Callable[[dict], list]] = None,
-):
+def with_env_setup(main_fn):
     """Decorator that runs prepare_env first and passes EnvContext.
 
     The decorated function must accept (cfg, env: EnvContext).
     """
 
-    def decorator(main_fn):
-        def wrapper(cfg):
-            env = prepare_env(cfg, validator=validator)
-            return main_fn(cfg, env)
+    def wrapper(cfg):
+        env = prepare_env(cfg)
+        return main_fn(cfg, env)
 
-        return wrapper
-
-    return decorator
+    return wrapper
