@@ -10,4 +10,3 @@ torchrun \
     --nproc_per_node=8 \
     --standalone \
     src/nexus_align/cli/main.py "$@"
-

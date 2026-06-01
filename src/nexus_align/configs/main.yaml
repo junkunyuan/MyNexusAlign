@@ -2,14 +2,14 @@
 
 defaults:
   - model: sit
+  - data: lmdb_latents
   - _self_
 
 exp_mode: train  # "train" or "eval"
 
 common:
   seed: 42
-  debug: true
-  debug_console: true
+  debug: false
   deterministic: true
   time_cost_analysis: false
 

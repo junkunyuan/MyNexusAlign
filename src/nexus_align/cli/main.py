@@ -3,8 +3,10 @@
 import os
 
 import hydra
+import torch
 
 import nexus_align.models  # noqa: F401  # registers model factories on import
+import nexus_align.datasets  # noqa: F401  # registers dataset factories on import
 from nexus_align.registry import registry
 from nexus_align.engine.setup import with_env_setup
 
@@ -22,6 +24,21 @@ def main(cfg, env):
     # --------------------------------------------------------------------------------
     # 1. Prepare dataset
     # --------------------------------------------------------------------------------
+    dataset = registry.get("dataset", cfg.data.name)(
+        cfg.data.lmdb_path,
+        flip_prob=cfg.data.flip_prob,
+    )
+    sampler = torch.utils.data.distributed.DistributedSampler(
+        dataset, num_replicas=world_size, rank=rank, shuffle=True,
+    )
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=cfg.data.batch_size // world_size,
+        sampler=sampler,
+        num_workers=cfg.data.num_workers,
+        pin_memory=True,
+        drop_last=True,
+    )
 
     # --------------------------------------------------------------------------------
     # 2. Prepare models

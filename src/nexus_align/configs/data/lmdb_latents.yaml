@@ -1,0 +1,7 @@
+# LMDB latents dataset config (selected by name from the dataset registry).
+
+name: lmdb_latents
+lmdb_path: /mnt/hdfs/sg/junkun/data_and_model/open_source/ILSVRC/imagenet-1k/data_MeanFlow/imagenet_train_latents.lmdb     # path to the LMDB latents dataset
+flip_prob: 0.5     # probability of returning horizontally-flipped moments
+batch_size: 256    # global batch size across all ranks
+num_workers: 4

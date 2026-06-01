@@ -47,7 +47,7 @@ def prepare_env(cfg) -> EnvContext:
     # Initialize logger and wandb
     init_log(
         exp_info=cfg.log.exp_info,
-        debug_console=cfg.common.debug_console,
+        debug_console=cfg.common.debug,
         exp_dir=os.path.join(cfg.log.log_dir, "logs"),
     )
     wandb_init = init_wandb(
