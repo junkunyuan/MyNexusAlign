@@ -160,7 +160,7 @@ def init_log(
     fmt = "[%(asctime)s][%(exp_info)s] %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
 
-    asctime_rgb = (90, 230, 130)
+    asctime_rgb = (80, 220, 120)
     exp_info_rgb = (230, 200, 80)
     location_rgb = (120, 200, 230)
     rank_rgb = (230, 80, 80)

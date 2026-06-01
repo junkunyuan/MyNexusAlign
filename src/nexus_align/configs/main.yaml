@@ -8,16 +8,22 @@ exp_mode: train  # "train" or "eval"
 
 common:
   seed: 42
-  debug: false
-  debug_console: false
+  debug: true
+  debug_console: true
   deterministic: true
   time_cost_analysis: false
 
 log:
-  exp_info: default  # experiment identifier
-  log_dir: logs  # base log directory
+  exp_info: default
+  log_dir: logs
   wandb:
     entity: null
     project: nexus_align
     name: null
     wandb_offline: true
+
+hydra:
+  run:
+    dir: ${log.log_dir}/${log.exp_info}
+  job:
+    chdir: true

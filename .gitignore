@@ -1,1 +1,5 @@
-__pycache__
+# Python
+__pycache__/
+
+# Logs
+logs/
