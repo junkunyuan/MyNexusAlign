@@ -1,9 +1,9 @@
 name: meanflow
 
 train:
-  train_batch_size: 256       # global batch size across all ranks
+  train_batch_size: 2048       # global batch size across all ranks
   grad_accu_step: 1            # gradient accumulation steps
-  epochs: 140
+  epochs: 240
   learning_rate: 2.8e-4
   adam_beta1: 0.9
   adam_beta2: 0.95
@@ -13,7 +13,7 @@ train:
   ema_decay: 0.9999
   mixed_precision: bf16        # "no", "fp16", or "bf16"
   allow_tf32: true
-  checkpointing_steps: 5000
+  checkpointing_steps: 500
   resume_step: 0               # >0 resumes from checkpoints/{resume_step:07d}.pt
 
 loss:

@@ -1,12 +1,8 @@
 #!/bin/bash
 set -e
 
-REPO="$(cd "$(dirname "$0")" && pwd)"
-cd /opt/tiger
-
-# ---- Data ---------------------------------------------------------------------
-LOCAL_DST="/opt/tiger/MeanFlow/data_and_model/imagenet_train_latents.lmdb"
-HDFS_SRC=${SG}junkun/data_and_model/open_source/ILSVRC/imagenet-1k/data_MeanFlow/imagenet_train_latents.lmdb
+LOCAL_DST="/opt/tiger/imagenet_train_latents.lmdb"
+HDFS_SRC=hdfs://harunasg/home/byte_icvg_aigc_cp/user/video/junkun/data_and_model/open_source/ILSVRC/imagenet-1k/data_MeanFlow/imagenet_train_latents.lmdb
 
 if [[ -e "$LOCAL_DST" ]]; then
   echo "ImageNet 已存在,跳过下载: $LOCAL_DST"
@@ -16,20 +12,19 @@ else
   echo "完成ImageNet拷贝"
 fi
 
-# ---- Deps ---------------------------------------------------------------------
+export PYTHONPATH="$(pwd)/src:$PYTHONPATH"
+
 pip install lmdb hydra-core
 pip install pyinstrument
 
-# ---- Distributed env ----------------------------------------------------------
-export PYTHONPATH="$REPO/src${PYTHONPATH:+:$PYTHONPATH}"   # absolute; no trailing ":"
 export NCCL_DEBUG=WARN
-export WANDB_DIR="$REPO/logs"                              # keep wandb out of /opt/tiger
 
-NNODES=$ARNOLD_NUM
-NODE_RANK=$ARNOLD_ID
-NPROC_PER_NODE=$ARNOLD_WORKER_GPU
-MASTER_ADDRESS=$ARNOLD_WORKER_0_HOST
-MASTER_PORT=10861   # PORT1（PORT0 被 sshd 占用）
+source /opt/tiger/junkun_tools/merlin/ENV.sh
+
+fuser -k -9 ${MASTER_PORT}/tcp 2>/dev/null || true
+pkill -9 -f "src/nexus_align/cli/main.py" 2>/dev/null || true
+pkill -9 -f "torchrun.*--master_port ${MASTER_PORT}" 2>/dev/null || true
+sleep 2
 
 torchrun \
     --nnodes ${NNODES} \
@@ -37,8 +32,5 @@ torchrun \
     --nproc_per_node ${NPROC_PER_NODE} \
     --master_addr ${MASTER_ADDRESS} \
     --master_port ${MASTER_PORT} \
-    "$REPO/src/nexus_align/cli/main.py" \
-    hydra.job.chdir=false \
-    log.log_dir="$REPO/logs" \
-    data.lmdb_path="$LOCAL_DST" \
+    "src/nexus_align/cli/main.py" \
     "$@"
