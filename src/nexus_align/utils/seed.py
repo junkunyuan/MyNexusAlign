@@ -1,4 +1,4 @@
-"""Random seed and deterministic utilities."""
+"""Random control: seed setting and deterministic mode utilities."""
 
 import os
 import random

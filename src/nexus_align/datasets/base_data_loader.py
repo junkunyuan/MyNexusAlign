@@ -1,4 +1,4 @@
-"""Base data loader."""
+"""Base data loader: abstract interface for dataset loading."""
 
 from abc import ABC, abstractmethod
 

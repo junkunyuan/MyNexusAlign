@@ -1,4 +1,4 @@
-"""Distributed environment and tools."""
+"""Distributed: environment init and collective communication helpers."""
 
 import os
 

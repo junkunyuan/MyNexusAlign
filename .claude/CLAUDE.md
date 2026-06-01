@@ -37,7 +37,7 @@ class Meter:
 
 ## Module Docstrings
 
-Add a concise module docstring at the top of each Python file.
+Add a concise module docstring at the top of each Python file with the format of "A: B".
 
 Good Example: `"""Training meters: windowed metric tracking and hardware monitoring."""`
 

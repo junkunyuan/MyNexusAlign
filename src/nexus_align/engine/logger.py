@@ -1,4 +1,4 @@
-"""Rank-aware console/file experiment logging setup."""
+"""Experiment logging: rank-aware console and file handlers."""
 
 import os
 import re

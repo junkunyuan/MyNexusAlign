@@ -1,4 +1,4 @@
-"""Log scalar metrics to Tensorboard and wandb."""
+"""Metric tracking: scalar logging to Tensorboard and wandb."""
 
 import os
 import json

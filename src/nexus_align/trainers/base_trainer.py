@@ -1,4 +1,4 @@
-"""Base trainer."""
+"""Base trainer: abstract interface for trainers."""
 
 from abc import ABC, abstractmethod
 from contextlib import nullcontext

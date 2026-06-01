@@ -17,8 +17,8 @@ GB = 1024**3
 class Meter:
     """A single windowed metric: a bounded value history plus its running mean.
 
-    precision/notation control display: notation "e" prints scientific form
-    (precision=2 -> 2.34e-02), "f" prints fixed-point (precision=4 -> 0.0234).
+    precision/notation control how a value prints. For 0.0234 with precision=2:
+    notation "e" -> 2.34e-02 (scientific), notation "f" -> 0.02 (fixed-point).
     """
 
     window_size: int
@@ -80,7 +80,7 @@ class WindowMeter:
     # ----------------------------------------
     # Meter Utilities
     # ----------------------------------------
-    def add_new_meter(
+    def register_meter(
         self,
         meter: str,
         window_size: int,
@@ -113,14 +113,14 @@ class WindowMeter:
                 yield name, meter
 
     def latest_metrics(self) -> dict:
-        """Return the latest value of each experiment metric (0 if empty)."""
+        """Return the latest value of each experiment metric (NaN if empty)."""
         return {
-            name: (meter.latest if meter.latest is not None else "NaN")
+            name: (meter.latest if meter.latest is not None else float("nan"))
             for name, meter in self._experiment_meters()
         }
 
     # ----------------------------------------
-    # Hardware Monitoring
+    # Hardware Meters
     # ----------------------------------------
     def _setup_hardware(self) -> None:
         """Resolve the NVML handle, and start sampling."""
@@ -136,10 +136,10 @@ class WindowMeter:
             physical_idx = [int(x) for x in visible.split(",")][self.device_id]
         self.nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(physical_idx)
 
-        self.hardware_meters = self._init_hardware_meters()
+        self.hardware_meters = self._register_hardware_meters()
         self.start_hardware_monitoring()
 
-    def _init_hardware_meters(self) -> set[str]:
+    def _register_hardware_meters(self) -> set[str]:
         """Register GPU/CPU memory and utilization meters; return their names."""
         log_window = 3600  # seconds of history kept for non-peak meters
         names = [
@@ -151,7 +151,7 @@ class WindowMeter:
         for name in names:
             precision = 0 if "util" in name else 1
             window = 1 if ("peak" in name or "total" in name) else log_window
-            self.add_new_meter(name, window_size=window, precision=precision, notation="f")
+            self.register_meter(name, window_size=window, precision=precision, notation="f")
 
         self.update("gpu_mem_total", self._pynvml.nvmlDeviceGetMemoryInfo(self.nvml_handle).total / GB)
         self.update("cpu_mem_total", self._psutil.virtual_memory().total / GB)
@@ -204,10 +204,10 @@ class WindowMeter:
     # ----------------------------------------
     # Epoch and Step Meters
     # ----------------------------------------
-    def add_epoch_step(self, epoch_window: int = 5, step_window: int = 100) -> None:
+    def register_timing_meters(self, epoch_window: int = 5, step_window: int = 100) -> None:
         """Register the epoch and step timing meters."""
-        self.add_new_meter("epoch", window_size=epoch_window, precision=1, notation="f")
-        self.add_new_meter("step", window_size=step_window, precision=1, notation="f")
+        self.register_meter("epoch", window_size=epoch_window, precision=1, notation="f")
+        self.register_meter("step", window_size=step_window, precision=1, notation="f")
 
     def update_train_state(self, train_state: dict) -> None:
         """Restore the epoch/step/total_step counters (e.g. after resuming)."""

@@ -1,4 +1,4 @@
-"""Base model."""
+"""Base model: abstract interface for models."""
 
 from abc import ABC, abstractmethod
 

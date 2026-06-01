@@ -1,3 +1,5 @@
+"""CLI entry: Hydra-configured entry point with environment setup."""
+
 import hydra
 
 @hydra.main(
