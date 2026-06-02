@@ -29,13 +29,10 @@ def init_dist_env() -> tuple[int, int, torch.device]:
         torch.cuda.set_device(local_rank)
 
         prefix = "🌐 Distributed environment initialization:  "
-        print(f"{prefix}world_size {world_size}  rank {rank}  local_rank {local_rank}")
+        print(f"{prefix}world_size {world_size}  rank {rank}  device {device}")
         dist.barrier()
     else:
-        dist_safe_exit(
-            exit_code=1,
-            message="❌ Initialize distributed environment failed"
-        )
+        dist_safe_exit(1, message="❌ Initialize distributed environment failed")
 
     return world_size, rank, device
 

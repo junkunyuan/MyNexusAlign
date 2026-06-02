@@ -13,7 +13,7 @@
 # cached locally; subsequent runs skip the download/extract step.
 set -euo pipefail
 
-EXP_NAME=${EXP_NAME:-meanflow_l_2}
+EXP_NAME=${EXP_NAME:-default}
 OUTPUT_DIR=${OUTPUT_DIR:-logs}
 MODEL=${MODEL:-SiT-L/2}
 RESOLUTION=${RESOLUTION:-256}
@@ -21,7 +21,7 @@ RESOLUTION=${RESOLUTION:-256}
 CFG_SCALE=${CFG_SCALE:-1.0}
 NUM_STEPS=${NUM_STEPS:-1}
 NUM_FID_SAMPLES=${NUM_FID_SAMPLES:-50000}
-PER_PROC_BATCH=${PER_PROC_BATCH:-128}
+PER_PROC_BATCH=${PER_PROC_BATCH:-32}
 NPROC=${NPROC:-${ARNOLD_WORKER_GPU:-8}}
 FID_STATS=${FID_STATS:-./fid_stats/adm_in256_stats.npz}
 

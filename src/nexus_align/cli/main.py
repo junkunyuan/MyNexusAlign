@@ -2,6 +2,7 @@
 
 import os
 from copy import deepcopy
+from omegaconf import OmegaConf
 from contextlib import nullcontext
 
 import hydra
@@ -43,9 +44,9 @@ def amp_autocast(dtype):
     version_base="1.3",
 )
 @with_env_setup
-def main(cfg, env):
-    world_size, rank, device = env.world_size, env.rank, env.device
-    cfg_dict = env.cfg_dict
+def main(cfg, device):
+    rank = cfg.common.rank
+    world_size = cfg.common.world_size
 
     # --------------------------------------------------------------------------------
     # 1. Prepare dataset
@@ -219,7 +220,7 @@ def main(cfg, env):
                         "model": model.module.state_dict(),
                         "ema": ema.state_dict(),
                         "opt": optimizer.state_dict(),
-                        "config": cfg_dict,
+                        "config": OmegaConf.to_container(cfg, resolve=True),
                         "steps": global_step,
                     }
                     ckpt_path = os.path.join(ckpt_dir, f"{global_step:07d}.pt")

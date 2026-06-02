@@ -12,7 +12,6 @@ common:
   seed: 42
   debug: false
   deterministic: true
-  time_cost_analysis: false
 
 log:
   exp_info: default

@@ -1,9 +1,6 @@
 """Environment setup: distributed init, logging, seed, and config for train/eval."""
 
 import os
-import pyinstrument
-from typing import Optional
-from dataclasses import dataclass
 from omegaconf import OmegaConf, open_dict
 
 import torch
@@ -14,28 +11,10 @@ from nexus_align.engine.distributed import init_dist_env
 from nexus_align.utils.seed import set_seed, set_deterministic
 
 
-@dataclass
-class EnvContext:
-    """Context returned after environment preparation."""
-
-    world_size: int
-    rank: int
-    device: torch.device
-    cfg_dict: dict
-    seed: int
-    profiler: Optional[pyinstrument.Profiler]
-
-
-def prepare_env(cfg) -> EnvContext:
+def prepare_env(cfg) -> torch.device:
     """Prepare common environment: distributed init, logging, seed, config."""
     # Initialize distributed environment
     world_size, rank, device = init_dist_env()
-
-    # For time cost analysis
-    profiler = None
-    if rank == 0 and cfg.common.time_cost_analysis:
-        profiler = pyinstrument.Profiler()
-        profiler.start()
 
     # Update configs
     with open_dict(cfg):
@@ -43,6 +22,8 @@ def prepare_env(cfg) -> EnvContext:
         log_dir = os.path.join(base_log_dir, cfg.log.exp_info)
         cfg.common.project_path = os.getcwd().split(log_dir)[0]
         cfg.log.log_dir = os.path.join(cfg.common.project_path, log_dir)  # use abs path
+        cfg.common.world_size = world_size
+        cfg.common.rank = rank
 
     # Initialize logger and wandb
     init_log(
@@ -72,27 +53,19 @@ def prepare_env(cfg) -> EnvContext:
         config_save_path = os.path.join(cfg.log.log_dir, "config.yaml")
         OmegaConf.save(config=cfg, resolve=True, f=config_save_path)
         print(f"💾 Saved configs to <{config_save_path}>")
-
-    cfg_dict = OmegaConf.to_container(cfg)
-
-    return EnvContext(
-        world_size=world_size,
-        rank=rank,
-        device=device,
-        cfg_dict=cfg_dict,
-        seed=seed,
-        profiler=profiler,
-    )
+    
+    return device
 
 
 def with_env_setup(main_fn):
-    """Decorator that runs prepare_env first and passes EnvContext.
+    """
+    Decorator that runs prepare_env and passes the resolved torch device.
 
-    The decorated function must accept (cfg, env: EnvContext).
+    The decorated function must accept (cfg, device: torch.device).
     """
 
     def wrapper(cfg):
-        env = prepare_env(cfg)
-        return main_fn(cfg, env)
+        device = prepare_env(cfg)
+        return main_fn(cfg, device)
 
     return wrapper
