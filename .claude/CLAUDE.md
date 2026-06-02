@@ -1,6 +1,6 @@
 ## Code Style
 
-Keep code simple.
+Keep code as simple as possible.
 
 ## Docstrings
 
@@ -12,7 +12,8 @@ class RemoveColorFilter(logging.Filter):
 
 Good example:
 class Meter:
-    """A single windowed metric: a bounded value history plus its running mean.
+    """
+    A single windowed metric: a bounded value history plus its running mean.
 
     precision/notation control display: notation "e" prints scientific form
     (precision=2 -> 2.34e-02), "f" prints fixed-point (precision=4 -> 0.0234).
@@ -20,7 +21,8 @@ class Meter:
 
 Bad example:
 class Meter:
-    """Track one scalar metric over a fixed-size sliding window.
+    """
+    Track one scalar metric over a fixed-size sliding window.
 
     Stores the most recent ``window_size`` numeric values in a bounded queue and
     recomputes ``mean`` as the arithmetic average of the stored window whenever
@@ -41,3 +43,8 @@ Add a concise module docstring at the top of each Python file with the format of
 
 Good Example: `"""Training meters: windowed metric tracking and hardware monitoring."""`
 
+## Communication
+
+Keep using Chinese Mandarin to communicate with the user.
+
+But keep using standard English when writing code and comments.

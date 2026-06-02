@@ -1,17 +1,6 @@
 #!/bin/bash
 set -e
 
-LOCAL_DST="/opt/tiger/imagenet_train_latents.lmdb"
-HDFS_SRC=hdfs://harunasg/home/byte_icvg_aigc_cp/user/video/junkun/data_and_model/open_source/ILSVRC/imagenet-1k/data_MeanFlow/imagenet_train_latents.lmdb
-
-if [[ -e "$LOCAL_DST" ]]; then
-  echo "ImageNet 已存在,跳过下载: $LOCAL_DST"
-else
-  mkdir -p /opt/tiger/MeanFlow/data_and_model
-  hdfs dfs -get -t 1024 "$HDFS_SRC" "$LOCAL_DST"
-  echo "完成ImageNet拷贝"
-fi
-
 export PYTHONPATH="$(pwd)/src:$PYTHONPATH"
 
 pip install lmdb hydra-core
@@ -20,6 +9,9 @@ pip install pyinstrument
 export NCCL_DEBUG=WARN
 
 source /opt/tiger/junkun_tools/merlin/ENV.sh
+
+# The VAE latent cache is built automatically on first run: if cfg.data.cache_dir is
+# empty, ImageNet1K preprocesses the parquet data in-place, then loads the latents.
 
 # fuser -k -9 ${MASTER_PORT}/tcp 2>/dev/null || true
 # pkill -9 -f "src/nexus_align/cli/main.py" 2>/dev/null || true
@@ -36,3 +28,4 @@ torchrun \
     --master_addr ${MASTER_ADDRESS} \
     --master_port ${MASTER_PORT} \
     src/nexus_align/cli/main.py \
+    data=imagenet_1k \

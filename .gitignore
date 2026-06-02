@@ -4,4 +4,8 @@ __pycache__/
 # Logs
 logs/
 
+# Data and model
+data_and_model/
+
+# To-delete
 line-log/
