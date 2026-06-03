@@ -1,7 +1,7 @@
 # Top-level config loaded by cli/main.py (config_name="main").
 
 defaults:
-  - model: sit
+  - model: meanflow_sit
   - data: imagenet_1k
   - algorithm: meanflow
   - override hydra/job_logging: none  # logging is configured by init_log instead

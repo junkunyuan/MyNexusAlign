@@ -149,7 +149,7 @@ def parse_args():
     p.add_argument("--global-seed", type=int, default=0)
     p.add_argument("--ckpt", type=str, required=True, help="Path to a MeanFlow checkpoint.")
     p.add_argument("--sample-dir", type=str, default="samples")
-    p.add_argument("--model", type=str, choices=list(MeanFlowSiT_models.keys()), default="SiT-L/2")
+    p.add_argument("--model", type=str, choices=list(MeanFlowSiT_models.keys()), default="MeanFlowSiT-L/2")
     p.add_argument("--num-classes", type=int, default=1000)
     p.add_argument("--resolution", type=int, choices=[256, 512], default=256)
     p.add_argument("--per-proc-batch-size", type=int, default=32)

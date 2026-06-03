@@ -5,127 +5,22 @@ References:
     - SiT:
         - Paper: Exploring Flow and Diffusion-based Generative Models with Scalable Interpolant Transformers
         - Official code: https://github.com/willisma/SiT
-    - MeanFlow: 
+    - MeanFlow:
         - Paper: Mean Flows for One-step Generative Modeling
         - Unofficial code: https://github.com/zhuyu-cs/MeanFlow
 """
 
+import math
+
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-import math
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
 
-def modulate(x, shift, scale):
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 # --------------------------------------------------------------------------------
-# Embedding Layers for Timesteps and Class Labels
+# Core MeanFlowSiT Model
 # --------------------------------------------------------------------------------
-
-class TimestepEmbedder(nn.Module):
-    """Embed scalar timesteps into vector representations."""
-    def __init__(self, hidden_size, frequency_embedding_size=256):
-        super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(frequency_embedding_size, hidden_size, bias=True),
-            nn.SiLU(),
-            nn.Linear(hidden_size, hidden_size, bias=True),
-        )
-        self.frequency_embedding_size = frequency_embedding_size
-
-    @staticmethod
-    def positional_embedding(t, dim, max_period=10000):
-        """
-        Create sinusoidal timestep embeddings.
-        t: (N,) tensor of indices, one per batch element (may be fractional)
-        dim: dimension of the output
-        max_period: controls the minimum frequency of the embeddings
-        Returns an (N, D) tensor of positional embeddings.
-        """
-        # https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
-        half = dim // 2
-        freqs = torch.exp(
-            -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
-        ).to(device=t.device)
-        args = t[:, None].float() * freqs[None]
-        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-        if dim % 2:
-            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
-        return embedding
-
-    def forward(self, t):
-        self.timestep_embedding = self.positional_embedding
-        t_freq = self.timestep_embedding(t, dim=self.frequency_embedding_size).to(t.dtype)
-        t_emb = self.mlp(t_freq)
-        return t_emb
-
-
-class LabelEmbedder(nn.Module):
-    """Embed class labels into vector representations."""
-    def __init__(self, num_classes, hidden_size, dropout_prob):
-        super().__init__()
-        use_cfg_embedding = dropout_prob > 0
-        self.embedding_table = nn.Embedding(num_classes + use_cfg_embedding, hidden_size)
-
-    def forward(self, labels, train, force_drop_ids=None):
-        embeddings = self.embedding_table(labels)
-        return embeddings
-
-
-# --------------------------------------------------------------------------------
-# Core SiT Model
-# --------------------------------------------------------------------------------
-
-class SiTBlock(nn.Module):
-    """A SiT block with adaptive layer norm zero (adaLN-Zero) conditioning."""
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0):
-        super().__init__()
-        self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.attn = Attention(
-            hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=False
-            )
-        self.attn.fused_attn = False
-        self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        approx_gelu = lambda: nn.GELU(approximate="tanh")
-        self.mlp = Mlp(
-            in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0
-            )
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
-        )
-
-    def forward(self, x, c):
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
-            self.adaLN_modulation(c).chunk(6, dim=-1)
-        )
-        x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
-        x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
-
-        return x
-
-
-class FinalLayer(nn.Module):
-    """The final layer of SiT."""
-    def __init__(self, hidden_size, patch_size, out_channels):
-        super().__init__()
-        self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_size, 2 * hidden_size, bias=True)
-        )
-
-    def forward(self, x, c):
-        shift, scale = self.adaLN_modulation(c).chunk(2, dim=-1)
-        x = modulate(self.norm_final(x), shift, scale)
-        x = self.linear(x)
-
-        return x
-
-
 class MeanFlowSiT(nn.Module):
     """Diffusion model with a transformer backbone, modified for MeanFlow."""
     def __init__(
@@ -156,9 +51,7 @@ class MeanFlowSiT(nn.Module):
         self.num_classes = num_classes
         self.z_dims = z_dims
 
-        self.x_embedder = PatchEmbed(
-            input_size, patch_size, in_channels, hidden_size, bias=True
-            )
+        self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
         self.t_embedder = TimestepEmbedder(hidden_size)  # end timestep t
         self.r_embedder = TimestepEmbedder(hidden_size)  # interval length t - r
         self.y_embedder = LabelEmbedder(num_classes, hidden_size, class_dropout_prob)
@@ -213,8 +106,8 @@ class MeanFlowSiT(nn.Module):
 
     def unpatchify(self, x, patch_size=None):
         """
-        x: (N, T, patch_size**2 * C)
-        imgs: (N, C, H, W)
+        x: (B, N, patch_size**2 * C)
+        imgs: (B, C, H, W)
         """
         c = self.out_channels
         p = self.x_embedder.patch_size[0] if patch_size is None else patch_size
@@ -228,28 +121,161 @@ class MeanFlowSiT(nn.Module):
 
     def forward(self, x, r, t, y=None, return_logvar=False):
         """
-        Forward pass of SiT modified for MeanFlow.
-        x: (N, C, H, W) tensor of spatial inputs (images or latents)
-        r: (N,) tensor of start timesteps
-        t: (N,) tensor of end timesteps
-        y: (N,) tensor of class labels
+        x: (B, C, H, W) tensor of spatial inputs (images or latents)
+        r: (B,) tensor of start timesteps
+        t: (B,) tensor of end timesteps
+        y: (B,) tensor of class labels
         """
-        x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
-        N, T, D = x.shape
-        # Condition on end timestep t and interval length t - r (MeanFlow):
-        t_embed = self.t_embedder(t)  # (N, D)
-        r_embed = self.r_embedder(t - r)  # (N, D)
+        x = self.x_embedder(x) + self.pos_embed  # (B, N, D), where N = H * W / patch_size ** 2
+        B, N, D = x.shape
+        # Condition on end timestep t and interval length t - r
+        t_embed = self.t_embedder(t)  # (B, D)
+        r_embed = self.r_embedder(t - r)  # (B, D)
 
         if y is None:
-            y = torch.zeros(N, dtype=torch.long, device=x.device)
+            y = torch.zeros(B, dtype=torch.long, device=x.device)
 
-        y_embed = self.y_embedder(y, self.training)  # (N, D)
-        c = t_embed + r_embed + y_embed  # (N, D)
+        y_embed = self.y_embedder(y)  # (B, D)
+        c = t_embed + r_embed + y_embed  # (B, D)
 
         for i, block in enumerate(self.blocks):
-            x = block(x, c)  # (N, T, D)
-        x = self.final_layer(x, c)  # (N, T, patch_size ** 2 * out_channels)
-        x = self.unpatchify(x)  # (N, out_channels, H, W)
+            x = block(x, c)  # (B, N, D)
+        x = self.final_layer(x, c)  # (B, N, patch_size ** 2 * out_channels)
+        x = self.unpatchify(x)  # (B, out_channels, H, W)
+
+        return x
+
+
+# --------------------------------------------------------------------------------
+# Embedding Layers for Timesteps and Class Labels
+# --------------------------------------------------------------------------------
+class TimestepEmbedder(nn.Module):
+    """Embed scalar timesteps into vector representations."""
+    def __init__(self, hidden_size, frequency_embedding_size=256):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(frequency_embedding_size, hidden_size, bias=True),
+            nn.SiLU(),
+            nn.Linear(hidden_size, hidden_size, bias=True),
+        )
+        self.frequency_embedding_size = frequency_embedding_size
+
+    @staticmethod
+    def positional_embedding(t, dim, max_period=10000):
+        """
+        Create sinusoidal timestep embeddings.
+
+        ``t``: (B,) a batch of timestep tensor (may be fractional)
+        ``dim``: dimension D of the output
+        ``max_period``: controls the minimum frequency of the embeddings
+        return: a (B, D) tensor of positional embeddings.
+
+        Reference: https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
+        """
+        half = dim // 2
+        freqs = torch.exp(
+            -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
+        ).to(device=t.device)
+        args = t[:, None].float() * freqs[None]
+        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        if dim % 2:
+            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+        return embedding
+
+    def forward(self, t):
+        """
+        t: (B,) a batch of timestep tensor
+        t_emb: (B, D) a batch of timestep embeddings
+        """
+        t_freq = self.positional_embedding(t, dim=self.frequency_embedding_size).to(t.dtype)
+        t_emb = self.mlp(t_freq)
+        return t_emb
+
+
+class LabelEmbedder(nn.Module):
+    """Embed class labels into vector representations."""
+    def __init__(self, num_classes, hidden_size, dropout_prob):
+        super().__init__()
+        use_cfg_embedding = dropout_prob > 0
+        self.embedding_table = nn.Embedding(num_classes + use_cfg_embedding, hidden_size)
+
+    def forward(self, labels):
+        """
+        labels: (B,) a batch of label tensor
+        embeddings: (B, D) a batch of label embeddings
+        """
+        embeddings = self.embedding_table(labels)
+        return embeddings
+
+
+# --------------------------------------------------------------------------------
+# Transformer Blocks of SiT
+# --------------------------------------------------------------------------------
+def modulate(x, shift, scale):
+    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+
+
+class SiTBlock(nn.Module):
+    """A SiT block with adaptive layer norm zero (adaLN-Zero) conditioning."""
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.attn = Attention(
+            hidden_size,
+            num_heads=num_heads,
+            qkv_bias=True,
+            qk_norm=False
+        )
+        self.attn.fused_attn = False
+        self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        mlp_hidden_dim = int(hidden_size * mlp_ratio)
+        approx_gelu = lambda: nn.GELU(approximate="tanh")
+        self.mlp = Mlp(
+            in_features=hidden_size,
+            hidden_features=mlp_hidden_dim,
+            act_layer=approx_gelu,
+            drop=0
+        )
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
+        )
+
+    def forward(self, x, c):
+        """
+        x: (B, N, D)
+        c: (B, D)
+        return x: (B, N, D)
+        """
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+            self.adaLN_modulation(c).chunk(6, dim=-1)
+        )
+        x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
+        x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+
+        return x
+
+
+class FinalLayer(nn.Module):
+    """The final layer of SiT."""
+    def __init__(self, hidden_size, patch_size, out_channels):
+        super().__init__()
+        self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_size, 2 * hidden_size, bias=True)
+        )
+
+    def forward(self, x, c):
+        """
+        x: (B, N, D)
+        c: (B, D)
+        return x: (B, N, patch_size**2 * out_channels)
+        """
+        shift, scale = self.adaLN_modulation(c).chunk(2, dim=-1)
+        x = modulate(self.norm_final(x), shift, scale)
+        x = self.linear(x)
 
         return x
 
@@ -258,7 +284,6 @@ class MeanFlowSiT(nn.Module):
 # Sine/Cosine Positional Embedding Functions
 # https://github.com/facebookresearch/mae/blob/main/util/pos_embed.py
 # --------------------------------------------------------------------------------
-
 def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False, extra_tokens=0):
     """
     grid_size: int of the grid height and width
@@ -311,7 +336,6 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
 # --------------------------------------------------------------------------------
 # MeanFlowSiT Configs
 # --------------------------------------------------------------------------------
-
 def MeanFlowSiT_XL_2(cfg, **kwargs):
     return MeanFlowSiT(cfg, depth=28, hidden_size=1152, decoder_hidden_size=1152, patch_size=2, num_heads=16, **kwargs)
 
@@ -325,8 +349,8 @@ def MeanFlowSiT_B_4(cfg, **kwargs):
     return MeanFlowSiT(cfg, depth=12, hidden_size=768, decoder_hidden_size=768, patch_size=4, num_heads=12, **kwargs)
 
 MeanFlowSiT_models = {
-    'SiT-XL/2': MeanFlowSiT_XL_2,
-    'SiT-L/2':  MeanFlowSiT_L_2,
-    'SiT-B/2':  MeanFlowSiT_B_2,
-    'SiT-B/4':  MeanFlowSiT_B_4
+    'MeanFlowSiT-XL/2': MeanFlowSiT_XL_2,
+    'MeanFlowSiT-L/2':  MeanFlowSiT_L_2,
+    'MeanFlowSiT-B/2':  MeanFlowSiT_B_2,
+    'MeanFlowSiT-B/4':  MeanFlowSiT_B_4
 }

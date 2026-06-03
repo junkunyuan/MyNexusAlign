@@ -158,7 +158,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--exp-name", type=str, default="meanflow_l_2")
     p.add_argument("--output-dir", type=str, default="logs")
-    p.add_argument("--model", type=str, default="SiT-L/2")
+    p.add_argument("--model", type=str, default="MeanFlowSiT-L/2")
     p.add_argument("--resolution", type=int, default=256)
     p.add_argument("--cfg-scale", type=float, default=1.0)
     p.add_argument("--num-steps", type=int, default=1)

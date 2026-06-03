@@ -15,7 +15,7 @@ set -euo pipefail
 
 EXP_NAME=${EXP_NAME:-default_20260603-203505}
 OUTPUT_DIR=${OUTPUT_DIR:-logs}
-MODEL=${MODEL:-SiT-L/2}
+MODEL=${MODEL:-MeanFlowSiT-L/2}
 RESOLUTION=${RESOLUTION:-256}
 # meanflow_l_2 trains with CFG (cfg-omega=0.2) -> eval cfg-scale must be 1.0.
 CFG_SCALE=${CFG_SCALE:-1.0}
