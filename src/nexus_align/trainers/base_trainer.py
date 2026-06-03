@@ -4,11 +4,11 @@ from abc import ABC, abstractmethod
 from contextlib import nullcontext
 
 from torch.optim import Optimizer
+from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 
 from nexus_align.models.base_model import BaseModel
 from nexus_align.algorithms.base_algorithm import BaseAlgorithm
-from nexus_align.datasets.base_data_loader import BaseDataLoader
 
 
 class BaseTrainer(ABC):
@@ -18,9 +18,9 @@ class BaseTrainer(ABC):
 
     def __init__(
         self,
-        train_dataloader: BaseDataLoader = None,
-        valid_dataloader: BaseDataLoader = None,
-        eval_dataloader: BaseDataLoader = None,
+        train_dataloader: DataLoader = None,
+        valid_dataloader: DataLoader = None,
+        eval_dataloader: DataLoader = None,
         model: BaseModel = None,
         algorithm: BaseAlgorithm = None,
         optimizer: Optimizer = None,

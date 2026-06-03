@@ -3,6 +3,8 @@ name: meanflow
 train:
   train_batch_size: 2048
   grad_accu_step: 1
+  shuffle: true
+  drop_last: true
   epochs: 240
   learning_rate: 2.8e-4
   adam_beta1: 0.9

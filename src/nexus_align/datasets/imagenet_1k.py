@@ -24,7 +24,15 @@ NUM_CLASSES = 1000
 
 
 class ImageNet1K(BaseTextImageDataset):
-    """ImageNet-1K dataset."""
+    """
+    ImageNet-1K dataset with two modes, selected by data.cache_dir:
+
+    - raw (cache_dir unset): decode JPEGs from parquet shards; __getitem__
+      returns {"image", "image_bytes", "text", "label"}.
+    - latent (cache_dir set): read precomputed VAE latents from safetensors
+      shards, building the cache on first use; __getitem__ returns
+      (moments, label), with horizontal flip served from cached flipped latents.
+    """
 
     def __init__(self, cfg) -> None:
         data = cfg.data
@@ -54,7 +62,7 @@ class ImageNet1K(BaseTextImageDataset):
             self._init_raw_mode()
 
     # --------------------------------------------------------------------------------
-    # Raw Model: Load and process data from parquets
+    # Raw mode: return (image: Image, image bytes: bytes, label text: str, label: int)
     # --------------------------------------------------------------------------------
     def _init_raw_mode(self) -> None:
         self.mode = "raw"
@@ -109,7 +117,7 @@ class ImageNet1K(BaseTextImageDataset):
         return {"image": image, "image_bytes": image_bytes, "text": text, "label": label}
 
     # --------------------------------------------------------------------------------
-    # Latent mode: load data from safetensors
+    # Latent mode: return (image VAE latent: float, label: int)
     # --------------------------------------------------------------------------------
     def _init_latent_mode(self) -> None:
         self.mode = "latent"
