@@ -6,7 +6,6 @@ import glob
 import json
 import time
 import bisect
-import importlib.util
 from typing import Any
 from collections.abc import Callable
 
@@ -29,10 +28,10 @@ def load_class_text(root: str) -> list[str] | None:
     path = os.path.join(root, "classes.py")
     if not os.path.exists(path):
         return None
-    spec = importlib.util.spec_from_file_location("imagenet_classes", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return list(module.IMAGENET2012_CLASSES.values())
+    ns: dict[str, Any] = {}
+    with open(path) as f:
+        exec(f.read(), ns)
+    return list(ns["IMAGENET2012_CLASSES"].values())
 
 
 def split_files(root: str, split: str) -> list[str]:
@@ -63,19 +62,22 @@ class ImageNet1K(BaseTextImageDataset):
         super().__init__(
             image_transform=None,
             text_transform=None,
-            sample_ratio=data.sample_ratio,
+            sample_ratio=data.get("sample_ratio"),
             dedup=data.get("dedup", False),
         )
         self.root = data.root
-        self.split = data.split
-        self.img_size = data.img_size
-        self.flip_prob = data.flip_prob
-        self.cache_dir = data.cache_dir
-        self.vae = data.vae
-        self.read_batch = data.read_batch
-        self.vae_batch = data.vae_batch
-        self.shard_size = data.shard_size
-        self.preprocess_workers = data.preprocess_workers
+        self.split = data.get("split", "train")
+        self.img_size = data.get("img_size", 256)
+        self.flip_prob = data.get("flip_prob", 0.5)
+        self.cache_dir = data.get("cache_dir")
+        self.shared_cache = data.get("shared_cache", False)
+
+        # VAE-latent preprocessing knobs, only used when the cache is built on the fly.
+        self.vae = data.get("vae")
+        self.read_batch = data.get("read_batch", 256)
+        self.vae_batch = data.get("vae_batch", 256)
+        self.shard_size = data.get("shard_size", 8192)
+        self.preprocess_workers = data.get("preprocess_workers", 8)
 
         if self.cache_dir is not None:
             self._init_latent_mode()
@@ -143,7 +145,7 @@ class ImageNet1K(BaseTextImageDataset):
     def _init_latent_mode(self) -> None:
         self.mode = "latent"
         if self._load_manifest() is None:
-            self._build_cache()
+            self._build_cache()  # build cache if current cache is empty or incomplete
         manifest = self._load_manifest()
         if manifest is None:
             raise RuntimeError(f"❌ Latent cache build incomplete at {self.cache_dir}")
@@ -170,22 +172,59 @@ class ImageNet1K(BaseTextImageDataset):
                 return None
         return manifest
 
+    def _verify_shared_cache(self, cache: str, run_id: str, device: torch.device) -> bool:
+        """Probe whether cache lives on a filesystem visible to every rank/node."""
+        if not (dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1):
+            return False  # single process: a "shared" cache is identical to a local one
+        os.makedirs(cache, exist_ok=True)
+        probe = os.path.join(cache, f".probe-{run_id}")
+        if dist.get_rank() == 0:
+            open(probe, "w").close()
+        dist.barrier()
+        # A shared FS may lag slightly behind the writer; poll briefly before giving up.
+        seen = False
+        for _ in range(15):
+            if os.path.exists(probe):
+                seen = True
+                break
+            time.sleep(1.0)
+        flag = torch.tensor([1 if seen else 0], device=device)
+        dist.all_reduce(flag, op=dist.ReduceOp.MIN)  # shared only if every rank saw the probe
+        if dist.get_rank() == 0:
+            os.remove(probe)
+        return bool(flag.item())
+
     def _build_cache(self) -> None:
         """
-        Encode the parquet data to VAE latents on this node's local disk.
+        Encode the parquet data to VAE latents and write a shard manifest.
 
-        NOTE: Each node builds a complete data cache using each node's local GPUs.
+        Two layouts, selected by self.shared_cache (verified at runtime):
+        - shared: all ranks across all nodes cooperate to build one cache on the
+          shared path; global rank 0 writes the manifest.
+        - local:  each node builds a complete cache on its own disk using that
+          node's GPUs; each node's local rank 0 writes the manifest.
+        If shared_cache is requested but the path is not visible to all nodes, it
+        falls back to the local layout.
         """
         from diffusers.models import AutoencoderKL
         from safetensors.torch import save_file
 
-        world = torch.cuda.device_count()
-        rank = dist.get_rank() % world
         run_id = os.environ.get("TORCHELASTIC_RUN_ID", "0")
         device = torch.device(f"cuda:{torch.cuda.current_device()}")
-
         cache = self.cache_dir
         os.makedirs(cache, exist_ok=True)
+
+        # Resolve the build-group layout: who cooperates on this cache directory.
+        shared = self.shared_cache and self._verify_shared_cache(cache, run_id, device)
+        if self.shared_cache and not shared:
+            print("⚠️ shared_cache requested but the path is not visible to all nodes; "
+                  "falling back to per-node local cache.")
+        if shared:
+            world = dist.get_world_size()
+            rank = dist.get_rank()
+        else:
+            world = torch.cuda.device_count()
+            rank = dist.get_rank() % world
 
         manifest_path = os.path.join(cache, f"manifest-{self.split}.json")
         clean_flag = os.path.join(cache, f".clean-{self.split}-{run_id}")
@@ -194,7 +233,7 @@ class ImageNet1K(BaseTextImageDataset):
 
         # Clean incomplete files
         if rank == 0:
-            print(f"⚙️ Building latent cache at {cache} ...")
+            print(f"💾 Building latent cache at {cache} ...")
             for pat in (f"latents-{self.split}-*.safetensors", f".done-{self.split}-*", f".clean-{self.split}-*"):
                 for p in glob.glob(os.path.join(cache, pat)):
                     os.remove(p)
@@ -204,18 +243,23 @@ class ImageNet1K(BaseTextImageDataset):
         else:
             _wait_for(lambda: os.path.exists(clean_flag))
 
+        # Load VAE
+        if self.vae is None:
+            raise ValueError("❌ data.vae must be set to build the latent cache (e.g. stabilityai/sd-vae-ft-ema)")
         vae = AutoencoderKL.from_pretrained(self.vae).to(device).eval()
+
+        # Dataloader for parquet files
         files = split_files(self.root, self.split)[rank::world]
         stream = _ParquetImageStream(files, self.img_size, load_class_text(self.root), self.read_batch)
         loader = torch.utils.data.DataLoader(
-            stream, batch_size=self.vae_batch, num_workers=self.preprocess_workers, pin_memory=True,
+            stream, batch_size=self.vae_batch, num_workers=self.preprocess_workers, pin_memory=True
         )
 
-        # One progress bar per node (driven by local rank 0, tracking its own samples).
+        # One progress bar per build group (driven by rank 0, tracking its own samples).
         bar = None
         if rank == 0:
             total = sum(pq.ParquetFile(f).metadata.num_rows for f in files)
-            bar = TqdmBar(total, "Encoding latents", "img", rank="all")
+            bar = TqdmBar(total, "🚀 Encoding latents", "img", rank="all")
 
         out_m, out_f, out_l, out_u = [], [], [], []
         state = {"count": 0, "shard": 0}
@@ -235,6 +279,7 @@ class ImageNet1K(BaseTextImageDataset):
             state["count"] = 0
             state["shard"] += 1
 
+        # Start encoding latents
         for imgs, labels, uids in loader:
             imgs = imgs.to(device, non_blocking=True)
             with torch.no_grad():
@@ -251,8 +296,7 @@ class ImageNet1K(BaseTextImageDataset):
         if bar is not None:
             bar.close()
         del vae
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
 
         # Mark this rank done; local rank 0 waits for all ranks, then writes the manifest.
         open(done_flag, "w").close()
@@ -282,9 +326,6 @@ class ImageNet1K(BaseTextImageDataset):
         moments = f.get_slice(name)[local]
         return moments.float(), label
 
-    # --------------------------------------------------------------------------------
-    # Common Model: Load data from parquets or safetensors
-    # --------------------------------------------------------------------------------
     def __getitem__(self, index: int) -> dict[str, Any] | tuple[torch.Tensor, int]:
         if self.mode == "latent":
             return self._get_latent(index)
@@ -294,7 +335,6 @@ class ImageNet1K(BaseTextImageDataset):
 # --------------------------------------------------------------------------------
 # Preprocessing helpers: image transform, manifest writer, parallel decode stream
 # --------------------------------------------------------------------------------
-
 def _center_crop_arr(pil_image: Image.Image, image_size: int) -> Image.Image:
     """Center-crop a PIL image to a square of image_size (DiT/MeanFlow style)."""
     while min(*pil_image.size) >= 2 * image_size:
@@ -335,7 +375,7 @@ def _write_manifest(cache_dir: str, split: str, img_size: int, vae_name: str) ->
     with open(tmp, "w") as f:
         json.dump(manifest, f, indent=2)
     os.replace(tmp, path)
-    print(f"✅ Wrote manifest: {total} samples across {len(shards)} shards -> {path}")
+    print(f"✅ Wrote manifest: {total} samples across {len(shards)} shards -> <{path}>")
 
 
 class _ParquetImageStream(torch.utils.data.IterableDataset):
@@ -345,8 +385,12 @@ class _ParquetImageStream(torch.utils.data.IterableDataset):
     JPEG decode + transform, so decoding runs in parallel and overlaps GPU encoding.
     """
 
-    def __init__(self, files: list[str], img_size: int, class_text: list[str] | None,
-                 read_batch: int) -> None:
+    def __init__(self, 
+        files: list[str],
+        img_size: int,
+        class_text: list[str] | None,
+        read_batch: int
+    ) -> None:
         self.files = files
         self.img_size = img_size
         self.class_text = class_text
@@ -366,5 +410,3 @@ class _ParquetImageStream(torch.utils.data.IterableDataset):
                     uid = BaseTextImageDataset.compute_md5(image_bytes=image_bytes, text=text, label=label)
                     uid_arr = np.frombuffer(bytes.fromhex(uid), dtype=np.uint8).copy()
                     yield transform(image), label, uid_arr
-
-

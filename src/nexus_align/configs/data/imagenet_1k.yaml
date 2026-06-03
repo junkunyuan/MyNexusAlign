@@ -9,6 +9,7 @@ drop_last: true
 # Latent cache dir. If empty/missing, ImageNet1K builds it on first run (VAE-encode
 # the parquet data in-place), then loads latents. Set to null to read raw images.
 cache_dir: /opt/tiger/MyNexusAlign/data_and_model/ILSVRC/imagenet-1k/latents
+shared_cache: false
 
 # VAE-latent preprocessing knobs (used only when the cache is built on the fly).
 vae: stabilityai/sd-vae-ft-ema

@@ -5,19 +5,11 @@ import random
 from typing import Any, TypeVar
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from string import ascii_letters, digits, punctuation, whitespace
 
 import torch
 from torch.utils.data import Dataset
 
 T = TypeVar("T")
-
-_ENGLISH_CHARS = set(ascii_letters + digits + punctuation + whitespace)
-
-
-def is_pure_english(text: str) -> bool:
-    """Return True if every character is ASCII English/punctuation/whitespace."""
-    return all(c in _ENGLISH_CHARS for c in text)
 
 
 def sample_items(items: list[T], sample_ratio: float | int | None = None) -> list[T]:
