@@ -1,24 +1,25 @@
 """ImageNet-1K dataset: parquet reader and cached VAE-latent loader."""
 
-import bisect
-import glob
-import importlib.util
 import io
-import json
 import os
+import glob
+import json
 import time
-from collections.abc import Callable
+import bisect
+import importlib.util
 from typing import Any
+from collections.abc import Callable
 
-import numpy as np
-import pyarrow as pa
-import pyarrow.parquet as pq
 import torch
+import numpy as np
+import torch.distributed as dist
+import pyarrow as pa
 from PIL import Image
+import pyarrow.parquet as pq
 from safetensors import safe_open
 
-from nexus_align.datasets.base_dataset import BaseTextImageDataset
 from nexus_align.utils.progress import TqdmBar
+from nexus_align.datasets.base_dataset import BaseTextImageDataset
 
 NUM_CLASSES = 1000
 
@@ -137,13 +138,10 @@ class ImageNet1K(BaseTextImageDataset):
         return {"image": image, "image_bytes": image_bytes, "text": text, "label": label}
 
     # --------------------------------------------------------------------------------
-    # Latent Model: Load data from safetensors
+    # Latent mode: load data from safetensors
     # --------------------------------------------------------------------------------
     def _init_latent_mode(self) -> None:
         self.mode = "latent"
-        # (Re)build on the fly whenever this node's cache is missing or incomplete. The
-        # build uses only node-local (filesystem) coordination -- no cross-node
-        # collectives -- so nodes in different cache states never block each other.
         if self._load_manifest() is None:
             self._build_cache()
         manifest = self._load_manifest()
@@ -167,27 +165,25 @@ class ImageNet1K(BaseTextImageDataset):
             return None
         with open(manifest_path) as f:
             manifest = json.load(f)
-        all_present = all(os.path.exists(os.path.join(self.cache_dir, s["file"]))
-                          for s in manifest["shards"])
-        return manifest if all_present else None
+        for s in manifest["shards"]:
+            if not os.path.exists(os.path.join(self.cache_dir, s["file"])):
+                return None
+        return manifest
 
     def _build_cache(self) -> None:
-        """Encode the parquet data to fp16 VAE latents on this node's local disk.
+        """
+        Encode the parquet data to VAE latents on this node's local disk.
 
-        Files are split across node-local ranks (LOCAL_RANK / LOCAL_WORLD_SIZE) so each
-        node builds a complete cache; decoding runs in parallel workers overlapped with
-        GPU encoding. Coordination is purely node-local via marker files (no NCCL
-        collectives), so nodes never block one another. Local rank 0 wipes any stale
-        cache, then collects all ranks' shards and writes the manifest.
+        NOTE: Each node builds a complete data cache using each node's local GPUs.
         """
         from diffusers.models import AutoencoderKL
         from safetensors.torch import save_file
 
-        rank = int(os.environ.get("LOCAL_RANK", 0))
-        world = int(os.environ.get("LOCAL_WORLD_SIZE") or torch.cuda.device_count() or 1)
+        world = torch.cuda.device_count()
+        rank = dist.get_rank() % world
         run_id = os.environ.get("TORCHELASTIC_RUN_ID", "0")
-        device = (torch.device(f"cuda:{torch.cuda.current_device()}")
-                  if torch.cuda.is_available() else torch.device("cpu"))
+        device = torch.device(f"cuda:{torch.cuda.current_device()}")
+
         cache = self.cache_dir
         os.makedirs(cache, exist_ok=True)
 
@@ -196,10 +192,9 @@ class ImageNet1K(BaseTextImageDataset):
         done_flag = os.path.join(cache, f".done-{self.split}-{run_id}-{rank:03d}")
         done_glob = os.path.join(cache, f".done-{self.split}-{run_id}-*")
 
-        # Local rank 0 wipes any stale shards/manifest/markers, then signals; the others
-        # wait so their writes are never deleted.
+        # Clean incomplete files
         if rank == 0:
-            print(f"⚙️  Building latent cache at {cache} ...")
+            print(f"⚙️ Building latent cache at {cache} ...")
             for pat in (f"latents-{self.split}-*.safetensors", f".done-{self.split}-*", f".clean-{self.split}-*"):
                 for p in glob.glob(os.path.join(cache, pat)):
                     os.remove(p)

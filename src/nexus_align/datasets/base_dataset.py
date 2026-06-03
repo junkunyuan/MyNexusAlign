@@ -2,10 +2,10 @@
 
 import hashlib
 import random
+from typing import Any, TypeVar
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from string import ascii_letters, digits, punctuation, whitespace
-from typing import Any, TypeVar
 
 import torch
 from torch.utils.data import Dataset
