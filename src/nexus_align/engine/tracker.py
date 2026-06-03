@@ -8,7 +8,7 @@ import torch.distributed as dist
 from torch.utils.tensorboard import SummaryWriter
 
 
-def init_wandb(entity: str, project: str, name: str, wandb_offline: bool) -> bool:
+def init_wandb(entity: str, project: str, name: str, wandb_offline: bool, log_dir: str) -> bool:
     """Initialize wandb (Weights & Biases: https://wandb.ai/site).
 
     Tries online mode first, then falls back to offline. Only rank 0 runs init.
@@ -18,13 +18,15 @@ def init_wandb(entity: str, project: str, name: str, wandb_offline: bool) -> boo
         project: wandb project.
         name: wandb run name.
         wandb_offline: If True, wandb is initialized in offline mode.
+        log_dir: Directory where wandb files are saved.
 
     Returns:
         True if wandb was initialized successfully, False otherwise.
     """
     wandb_init = False
     if dist.get_rank() == 0:
-        init_params = {"entity": entity, "project": project, "name": name}
+        os.makedirs(log_dir, exist_ok=True)
+        init_params = {"entity": entity, "project": project, "name": name, "dir": log_dir}
 
         if not wandb_offline:
             try:

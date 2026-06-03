@@ -41,6 +41,7 @@ def prepare_env(cfg) -> torch.device:
         project=cfg.log.wandb.project,
         name=cfg.log.wandb.name,
         wandb_offline=cfg.log.wandb.wandb_offline or cfg.common.debug,
+        log_dir=cfg.log.log_dir,
     )
     with open_dict(cfg):
         cfg.log.wandb.wandb_init = wandb_init

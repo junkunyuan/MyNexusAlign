@@ -17,6 +17,7 @@ def build_dataloader(cfg, dataset, mode: str = "train") -> torch.utils.data.Data
     world_size = cfg.common.world_size
     mode_cfg = cfg.algorithm[mode]
     batch_size = mode_cfg[f"{mode}_batch_size"]
+    batch_size_per_rank = batch_size // world_size
     shuffle = mode_cfg.get("shuffle", False)
     drop_last = mode_cfg.get("drop_last", False)
     grad_accu_step = mode_cfg.get("grad_accu_step", 1)
@@ -31,7 +32,7 @@ def build_dataloader(cfg, dataset, mode: str = "train") -> torch.utils.data.Data
     )
     dataloader = torch.utils.data.DataLoader(
         dataset,
-        batch_size=batch_size // world_size,
+        batch_size=batch_size_per_rank,
         sampler=sampler,
         num_workers=cfg.data.num_workers,
         pin_memory=True,
@@ -39,13 +40,13 @@ def build_dataloader(cfg, dataset, mode: str = "train") -> torch.utils.data.Data
     )
 
     # Print dataset info
-    total_batch_size = batch_size * world_size * grad_accu_step
+    effective_batch_size = batch_size_per_rank * world_size * grad_accu_step
     title = {"train": "Training", "valid": "Validation", "eval": "Evaluation"}[mode]
     info = [f"\n📚 {title} data:"]
     info += [f"    dataset: {cfg.data.name}"]
     info += [f"    sample_count: {len(dataset)}"]
-    info += [f"    batch_size: {batch_size}"]
-    info += [f"    total_batch_size: {total_batch_size}"]
+    info += [f"    batch_size_per_rank: {batch_size_per_rank}"]
+    info += [f"    effective_batch_size: {effective_batch_size}"]
     info += [f"    batch_count: {len(dataloader)}"]
     if sample_ratio != 1.:
         info += [f"    sample_ratio: {sample_ratio}"]
