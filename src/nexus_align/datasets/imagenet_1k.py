@@ -23,37 +23,6 @@ from nexus_align.datasets.base_dataset import BaseTextImageDataset
 NUM_CLASSES = 1000
 
 
-def load_class_text(root: str) -> list[str] | None:
-    """Load index->class-text list from the dataset's classes.py, or None."""
-    path = os.path.join(root, "classes.py")
-    if not os.path.exists(path):
-        return None
-    ns: dict[str, Any] = {}
-    with open(path) as f:
-        exec(f.read(), ns)
-    return list(ns["IMAGENET2012_CLASSES"].values())
-
-
-def split_files(root: str, split: str) -> list[str]:
-    """Sorted parquet shard paths for a split (train/validation/test)."""
-    return sorted(glob.glob(os.path.join(root, "data", f"{split}-*.parquet")))
-
-
-def shard_num_samples(path: str) -> int:
-    """Number of samples stored in a latent shard file."""
-    with safe_open(path, framework="pt") as f:
-        return f.get_slice("label").get_shape()[0]
-
-
-def _wait_for(condition: Callable[[], bool], timeout: float = 7200.0, interval: float = 2.0) -> None:
-    """Poll until condition() is true, raising after timeout seconds."""
-    start = time.monotonic()
-    while not condition():
-        if time.monotonic() - start > timeout:
-            raise RuntimeError("❌ Timed out waiting for latent cache build coordination")
-        time.sleep(interval)
-
-
 class ImageNet1K(BaseTextImageDataset):
     """ImageNet-1K dataset."""
 
@@ -333,8 +302,33 @@ class ImageNet1K(BaseTextImageDataset):
 
 
 # --------------------------------------------------------------------------------
-# Preprocessing helpers: image transform, manifest writer, parallel decode stream
+# Helpers
 # --------------------------------------------------------------------------------
+def load_class_text(root: str) -> list[str] | None:
+    """Load index->class-text list from the dataset's classes.py, or None."""
+    path = os.path.join(root, "classes.py")
+    if not os.path.exists(path):
+        return None
+    ns: dict[str, Any] = {}
+    with open(path) as f:
+        exec(f.read(), ns)
+    return list(ns["IMAGENET2012_CLASSES"].values())
+
+
+def split_files(root: str, split: str) -> list[str]:
+    """Sorted parquet shard paths for a split (train/validation/test)."""
+    return sorted(glob.glob(os.path.join(root, "data", f"{split}-*.parquet")))
+
+
+def _wait_for(condition: Callable[[], bool], timeout: float = 7200.0, interval: float = 2.0) -> None:
+    """Poll until condition() is true, raising after timeout seconds."""
+    start = time.monotonic()
+    while not condition():
+        if time.monotonic() - start > timeout:
+            raise RuntimeError("❌ Timed out waiting for latent cache build coordination")
+        time.sleep(interval)
+
+
 def _center_crop_arr(pil_image: Image.Image, image_size: int) -> Image.Image:
     """Center-crop a PIL image to a square of image_size (DiT/MeanFlow style)."""
     while min(*pil_image.size) >= 2 * image_size:
@@ -356,13 +350,19 @@ def _build_transform(img_size: int) -> Callable:
     ])
 
 
+def _shard_num_samples(path: str) -> int:
+    """Number of samples stored in a latent shard file."""
+    with safe_open(path, framework="pt") as f:
+        return f.get_slice("label").get_shape()[0]
+
+
 def _write_manifest(cache_dir: str, split: str, img_size: int, vae_name: str) -> None:
     """Scan written shards and atomically write manifest-{split}.json."""
     shard_files = sorted(glob.glob(os.path.join(cache_dir, f"latents-{split}-*.safetensors")))
     shards: list[dict[str, Any]] = []
     total = 0
     for path in shard_files:
-        n = shard_num_samples(path)
+        n = _shard_num_samples(path)
         shards.append({"file": os.path.basename(path), "num_samples": n})
         total += n
     manifest = {
