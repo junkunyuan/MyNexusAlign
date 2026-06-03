@@ -26,30 +26,24 @@ class MeanFlowSiT(nn.Module):
     def __init__(
         self,
         cfg,
-        path_type='edm',
-        patch_size=2,
-        in_channels=4,
-        hidden_size=1152,
-        decoder_hidden_size=768,
-        depth=28,
-        num_heads=16,
-        mlp_ratio=4.0,
-        class_dropout_prob=0.1,
-        z_dims=[768],
-        projector_dim=2048,
-    ):
+        patch_size: int = 2,
+        in_channels: int = 4,
+        hidden_size: int = 1152,
+        depth: int = 28,
+        num_heads: int = 16,
+        mlp_ratio: float = 4.0,
+        class_dropout_prob: float = 0.1,
+    ) -> None:
         super().__init__()
         input_size = cfg.model.get("resolution", 256) // 8
         num_classes = cfg.model.get("num_classes", 1000)
         use_cfg = cfg.model.get("cfg_prob", 0) > 0
-        self.path_type = path_type
         self.in_channels = in_channels
         self.out_channels = in_channels
         self.patch_size = patch_size
         self.num_heads = num_heads
         self.use_cfg = use_cfg
         self.num_classes = num_classes
-        self.z_dims = z_dims
 
         self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
         self.t_embedder = TimestepEmbedder(hidden_size)  # end timestep t
@@ -62,10 +56,10 @@ class MeanFlowSiT(nn.Module):
         self.blocks = nn.ModuleList([
             SiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
         ])
-        self.final_layer = FinalLayer(decoder_hidden_size, patch_size, self.out_channels)
+        self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
         self.initialize_weights()
 
-    def initialize_weights(self):
+    def initialize_weights(self) -> None:
         # Initialize transformer layers:
         def _basic_init(module):
             if isinstance(module, nn.Linear):
@@ -104,7 +98,7 @@ class MeanFlowSiT(nn.Module):
         nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
-    def unpatchify(self, x, patch_size=None):
+    def unpatchify(self, x: torch.Tensor, patch_size: int | None = None) -> torch.Tensor:
         """
         x: (B, N, patch_size**2 * C)
         imgs: (B, C, H, W)
@@ -119,7 +113,13 @@ class MeanFlowSiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, w * p))
         return imgs
 
-    def forward(self, x, r, t, y=None, return_logvar=False):
+    def forward(
+        self,
+        x: torch.Tensor,
+        r: torch.Tensor,
+        t: torch.Tensor,
+        y: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """
         x: (B, C, H, W) tensor of spatial inputs (images or latents)
         r: (B,) tensor of start timesteps
@@ -151,7 +151,7 @@ class MeanFlowSiT(nn.Module):
 # --------------------------------------------------------------------------------
 class TimestepEmbedder(nn.Module):
     """Embed scalar timesteps into vector representations."""
-    def __init__(self, hidden_size, frequency_embedding_size=256):
+    def __init__(self, hidden_size: int, frequency_embedding_size: int = 256) -> None:
         super().__init__()
         self.mlp = nn.Sequential(
             nn.Linear(frequency_embedding_size, hidden_size, bias=True),
@@ -161,13 +161,13 @@ class TimestepEmbedder(nn.Module):
         self.frequency_embedding_size = frequency_embedding_size
 
     @staticmethod
-    def positional_embedding(t, dim, max_period=10000):
+    def positional_embedding(t: torch.Tensor, dim: int, max_period: int = 10000) -> torch.Tensor:
         """
         Create sinusoidal timestep embeddings.
 
-        ``t``: (B,) a batch of timestep tensor (may be fractional)
-        ``dim``: dimension D of the output
-        ``max_period``: controls the minimum frequency of the embeddings
+        t: (B,) a batch of timestep tensor (may be fractional)
+        dim: dimension D of the output
+        max_period: controls the minimum frequency of the embeddings
         return: a (B, D) tensor of positional embeddings.
 
         Reference: https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
@@ -182,7 +182,7 @@ class TimestepEmbedder(nn.Module):
             embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
         return embedding
 
-    def forward(self, t):
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
         """
         t: (B,) a batch of timestep tensor
         t_emb: (B, D) a batch of timestep embeddings
@@ -194,12 +194,12 @@ class TimestepEmbedder(nn.Module):
 
 class LabelEmbedder(nn.Module):
     """Embed class labels into vector representations."""
-    def __init__(self, num_classes, hidden_size, dropout_prob):
+    def __init__(self, num_classes: int, hidden_size: int, dropout_prob: float) -> None:
         super().__init__()
         use_cfg_embedding = dropout_prob > 0
         self.embedding_table = nn.Embedding(num_classes + use_cfg_embedding, hidden_size)
 
-    def forward(self, labels):
+    def forward(self, labels: torch.Tensor) -> torch.Tensor:
         """
         labels: (B,) a batch of label tensor
         embeddings: (B, D) a batch of label embeddings
@@ -211,13 +211,13 @@ class LabelEmbedder(nn.Module):
 # --------------------------------------------------------------------------------
 # Transformer Blocks of SiT
 # --------------------------------------------------------------------------------
-def modulate(x, shift, scale):
+def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
 class SiTBlock(nn.Module):
     """A SiT block with adaptive layer norm zero (adaLN-Zero) conditioning."""
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0):
+    def __init__(self, hidden_size: int, num_heads: int, mlp_ratio: float = 4.0) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.attn = Attention(
@@ -241,7 +241,7 @@ class SiTBlock(nn.Module):
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
 
-    def forward(self, x, c):
+    def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         """
         x: (B, N, D)
         c: (B, D)
@@ -258,7 +258,7 @@ class SiTBlock(nn.Module):
 
 class FinalLayer(nn.Module):
     """The final layer of SiT."""
-    def __init__(self, hidden_size, patch_size, out_channels):
+    def __init__(self, hidden_size: int, patch_size: int, out_channels: int) -> None:
         super().__init__()
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
@@ -267,7 +267,7 @@ class FinalLayer(nn.Module):
             nn.Linear(hidden_size, 2 * hidden_size, bias=True)
         )
 
-    def forward(self, x, c):
+    def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         """
         x: (B, N, D)
         c: (B, D)
@@ -284,7 +284,12 @@ class FinalLayer(nn.Module):
 # Sine/Cosine Positional Embedding Functions
 # https://github.com/facebookresearch/mae/blob/main/util/pos_embed.py
 # --------------------------------------------------------------------------------
-def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False, extra_tokens=0):
+def get_2d_sincos_pos_embed(
+    embed_dim: int, 
+    grid_size: int, 
+    cls_token: bool = False, 
+    extra_tokens: int = 0
+) -> np.ndarray:
     """
     grid_size: int of the grid height and width
     Returns pos_embed: (grid_size*grid_size, embed_dim), prepended with zeros for extra tokens if cls_token.
@@ -301,7 +306,7 @@ def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False, extra_tokens=
     return pos_embed
 
 
-def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):
+def get_2d_sincos_pos_embed_from_grid(embed_dim: int, grid: np.ndarray) -> np.ndarray:
     assert embed_dim % 2 == 0
 
     # use half of dimensions to encode grid_h
@@ -312,7 +317,7 @@ def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):
     return emb
 
 
-def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
+def get_1d_sincos_pos_embed_from_grid(embed_dim: int, pos: np.ndarray) -> np.ndarray:
     """
     embed_dim: output dimension for each position
     pos: positions to be encoded, size (M,)
@@ -336,17 +341,17 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
 # --------------------------------------------------------------------------------
 # MeanFlowSiT Configs
 # --------------------------------------------------------------------------------
-def MeanFlowSiT_XL_2(cfg, **kwargs):
-    return MeanFlowSiT(cfg, depth=28, hidden_size=1152, decoder_hidden_size=1152, patch_size=2, num_heads=16, **kwargs)
+def MeanFlowSiT_XL_2(cfg, **kwargs) -> MeanFlowSiT:
+    return MeanFlowSiT(cfg, depth=28, hidden_size=1152, patch_size=2, num_heads=16, **kwargs)
 
-def MeanFlowSiT_L_2(cfg, **kwargs):
-    return MeanFlowSiT(cfg, depth=24, hidden_size=1024, decoder_hidden_size=1024, patch_size=2, num_heads=16, **kwargs)
+def MeanFlowSiT_L_2(cfg, **kwargs) -> MeanFlowSiT:
+    return MeanFlowSiT(cfg, depth=24, hidden_size=1024, patch_size=2, num_heads=16, **kwargs)
 
-def MeanFlowSiT_B_2(cfg, **kwargs):
-    return MeanFlowSiT(cfg, depth=12, hidden_size=768, decoder_hidden_size=768, patch_size=2, num_heads=12, **kwargs)
+def MeanFlowSiT_B_2(cfg, **kwargs) -> MeanFlowSiT:
+    return MeanFlowSiT(cfg, depth=12, hidden_size=768, patch_size=2, num_heads=12, **kwargs)
 
-def MeanFlowSiT_B_4(cfg, **kwargs):
-    return MeanFlowSiT(cfg, depth=12, hidden_size=768, decoder_hidden_size=768, patch_size=4, num_heads=12, **kwargs)
+def MeanFlowSiT_B_4(cfg, **kwargs) -> MeanFlowSiT:
+    return MeanFlowSiT(cfg, depth=12, hidden_size=768, patch_size=4, num_heads=12, **kwargs)
 
 MeanFlowSiT_models = {
     'MeanFlowSiT-XL/2': MeanFlowSiT_XL_2,

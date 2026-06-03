@@ -13,7 +13,7 @@
 # cached locally; subsequent runs skip the download/extract step.
 set -euo pipefail
 
-EXP_NAME=${EXP_NAME:-default_20260603-203505}
+EXP_NAME=${EXP_NAME:-default_20260603-225827}
 OUTPUT_DIR=${OUTPUT_DIR:-logs}
 MODEL=${MODEL:-MeanFlowSiT-L/2}
 RESOLUTION=${RESOLUTION:-256}
