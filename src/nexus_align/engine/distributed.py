@@ -1,9 +1,14 @@
 """Distributed: environment init and collective communication helpers."""
 
 import os
+from datetime import timedelta
 
 import torch
 import torch.distributed as dist
+
+# Generous collective timeout: in-runtime latent preprocessing can take many minutes
+# and desynchronizes ranks, so the first training collective must tolerate the wait.
+_PG_TIMEOUT = timedelta(hours=2)
 
 
 def init_dist_env() -> tuple[int, int, torch.device]:
@@ -24,6 +29,7 @@ def init_dist_env() -> tuple[int, int, torch.device]:
             world_size=world_size,
             rank=rank,
             device_id=device,
+            timeout=_PG_TIMEOUT,
         )
 
         torch.cuda.set_device(local_rank)

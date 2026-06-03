@@ -1,12 +1,12 @@
 """ImageNet-1K dataset: parquet reader and cached VAE-latent loader."""
 
-import argparse
 import bisect
 import glob
 import importlib.util
 import io
 import json
 import os
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -18,6 +18,7 @@ from PIL import Image
 from safetensors import safe_open
 
 from nexus_align.datasets.base_dataset import BaseTextImageDataset
+from nexus_align.utils.progress import TqdmBar
 
 NUM_CLASSES = 1000
 
@@ -44,6 +45,15 @@ def shard_num_samples(path: str) -> int:
         return f.get_slice("label").get_shape()[0]
 
 
+def _wait_for(condition: Callable[[], bool], timeout: float = 7200.0, interval: float = 2.0) -> None:
+    """Poll until condition() is true, raising after timeout seconds."""
+    start = time.monotonic()
+    while not condition():
+        if time.monotonic() - start > timeout:
+            raise RuntimeError("❌ Timed out waiting for latent cache build coordination")
+        time.sleep(interval)
+
+
 class ImageNet1K(BaseTextImageDataset):
     """ImageNet-1K dataset."""
 
@@ -62,6 +72,7 @@ class ImageNet1K(BaseTextImageDataset):
         read_batch: int = 256,
         vae_batch: int = 64,
         shard_size: int = 8192,
+        preprocess_workers: int = 8,
     ) -> None:
         super().__init__(image_transform, text_transform, sample_ratio, dedup)
         self.root = root
@@ -73,6 +84,7 @@ class ImageNet1K(BaseTextImageDataset):
         self.read_batch = read_batch
         self.vae_batch = vae_batch
         self.shard_size = shard_size
+        self.preprocess_workers = preprocess_workers
 
         if cache_dir is not None:
             self._init_latent_mode()
@@ -139,11 +151,14 @@ class ImageNet1K(BaseTextImageDataset):
     # --------------------------------------------------------------------------------
     def _init_latent_mode(self) -> None:
         self.mode = "latent"
-        # Empty cache -> build it on the fly (collective across ranks); a partial
-        # cache is left for _verify_cache to reject with a detailed error.
-        if self._cache_is_empty():
-            self._run_preprocess()
-        manifest = self._verify_cache()
+        # (Re)build on the fly whenever this node's cache is missing or incomplete. The
+        # build uses only node-local (filesystem) coordination -- no cross-node
+        # collectives -- so nodes in different cache states never block each other.
+        if self._load_manifest() is None:
+            self._build_cache()
+        manifest = self._load_manifest()
+        if manifest is None:
+            raise RuntimeError(f"❌ Latent cache build incomplete at {self.cache_dir}")
 
         self.shards: list[tuple[str, int]] = []
         start = 0
@@ -155,58 +170,115 @@ class ImageNet1K(BaseTextImageDataset):
         self._handles: dict[str, Any] = {}  # per-worker lazy safe_open handles
         self.build_indices(start)
 
-    def _cache_is_empty(self) -> bool:
-        """True if no manifest and no shard files exist for this split."""
+    def _load_manifest(self) -> dict[str, Any] | None:
+        """Return the manifest if a complete cache exists for this split, else None."""
         manifest_path = os.path.join(self.cache_dir, f"manifest-{self.split}.json")
-        shard_files = glob.glob(os.path.join(self.cache_dir, f"latents-{self.split}-*.safetensors"))
-        return not os.path.exists(manifest_path) and not shard_files
-
-    def _run_preprocess(self) -> None:
-        """Build the latent cache in-place, reusing the current distributed context."""
-        import torch.distributed as dist
-
-        if dist.is_available() and dist.is_initialized():
-            rank, world = dist.get_rank(), dist.get_world_size()
-        else:
-            rank, world = 0, 1
-        device = (torch.device(f"cuda:{torch.cuda.current_device()}")
-                  if torch.cuda.is_available() else torch.device("cpu"))
-        if rank == 0:
-            print(f"⚙️  Empty cache, building latents at {self.cache_dir} ...")
-        build_latent_cache(self.root, self.split, self.img_size, self.cache_dir,
-                           self.vae, self.read_batch, self.vae_batch, self.shard_size,
-                           rank, world, device)
-
-    def _verify_cache(self) -> dict[str, Any]:
-        """Load and validate the latent manifest, raising a detailed error if not ready."""
-        manifest_path = os.path.join(self.cache_dir, f"manifest-{self.split}.json")
-        shard_files = sorted(glob.glob(
-            os.path.join(self.cache_dir, f"latents-{self.split}-*.safetensors")))
-
-        # Raise error if empty cache dir or incomplete cache data
         if not os.path.exists(manifest_path):
-            expected = sum(pq.ParquetFile(f).metadata.num_rows
-                           for f in split_files(self.root, self.split))
-            if not os.path.isdir(self.cache_dir) or not os.listdir(self.cache_dir):
-                raise RuntimeError(
-                    f"❌ Cache dir is empty: {self.cache_dir}. "
-                    f"Run preprocessing first.")
-            cached = sum(shard_num_samples(f) for f in shard_files)
-            raise RuntimeError(
-                f"❌ Incomplete cache in {self.cache_dir}: expected {expected} samples, "
-                f"found {len(shard_files)} shards with {cached} samples "
-                f"(missing {expected - cached}). Re-run preprocessing.")
-
+            return None
         with open(manifest_path) as f:
             manifest = json.load(f)
-        missing = [s["file"] for s in manifest["shards"]
-                   if not os.path.exists(os.path.join(self.cache_dir, s["file"]))]
-        if missing:
-            shown = ", ".join(missing[:5]) + ("..." if len(missing) > 5 else "")
-            raise RuntimeError(
-                f"❌ Manifest lists {len(manifest['shards'])} shards, "
-                f"{len(missing)} missing: {shown}")
-        return manifest
+        all_present = all(os.path.exists(os.path.join(self.cache_dir, s["file"]))
+                          for s in manifest["shards"])
+        return manifest if all_present else None
+
+    def _build_cache(self) -> None:
+        """Encode the parquet data to fp16 VAE latents on this node's local disk.
+
+        Files are split across node-local ranks (LOCAL_RANK / LOCAL_WORLD_SIZE) so each
+        node builds a complete cache; decoding runs in parallel workers overlapped with
+        GPU encoding. Coordination is purely node-local via marker files (no NCCL
+        collectives), so nodes never block one another. Local rank 0 wipes any stale
+        cache, then collects all ranks' shards and writes the manifest.
+        """
+        from diffusers.models import AutoencoderKL
+        from safetensors.torch import save_file
+
+        rank = int(os.environ.get("LOCAL_RANK", 0))
+        world = int(os.environ.get("LOCAL_WORLD_SIZE") or torch.cuda.device_count() or 1)
+        run_id = os.environ.get("TORCHELASTIC_RUN_ID", "0")
+        device = (torch.device(f"cuda:{torch.cuda.current_device()}")
+                  if torch.cuda.is_available() else torch.device("cpu"))
+        cache = self.cache_dir
+        os.makedirs(cache, exist_ok=True)
+
+        manifest_path = os.path.join(cache, f"manifest-{self.split}.json")
+        clean_flag = os.path.join(cache, f".clean-{self.split}-{run_id}")
+        done_flag = os.path.join(cache, f".done-{self.split}-{run_id}-{rank:03d}")
+        done_glob = os.path.join(cache, f".done-{self.split}-{run_id}-*")
+
+        # Local rank 0 wipes any stale shards/manifest/markers, then signals; the others
+        # wait so their writes are never deleted.
+        if rank == 0:
+            print(f"⚙️  Building latent cache at {cache} ...")
+            for pat in (f"latents-{self.split}-*.safetensors", f".done-{self.split}-*", f".clean-{self.split}-*"):
+                for p in glob.glob(os.path.join(cache, pat)):
+                    os.remove(p)
+            if os.path.exists(manifest_path):
+                os.remove(manifest_path)
+            open(clean_flag, "w").close()
+        else:
+            _wait_for(lambda: os.path.exists(clean_flag))
+
+        vae = AutoencoderKL.from_pretrained(self.vae).to(device).eval()
+        files = split_files(self.root, self.split)[rank::world]
+        stream = _ParquetImageStream(files, self.img_size, load_class_text(self.root), self.read_batch)
+        loader = torch.utils.data.DataLoader(
+            stream, batch_size=self.vae_batch, num_workers=self.preprocess_workers, pin_memory=True,
+        )
+
+        # One progress bar per node (driven by local rank 0, tracking its own samples).
+        bar = None
+        if rank == 0:
+            total = sum(pq.ParquetFile(f).metadata.num_rows for f in files)
+            bar = TqdmBar(total, "Encoding latents", "img", rank="all")
+
+        out_m, out_f, out_l, out_u = [], [], [], []
+        state = {"count": 0, "shard": 0}
+
+        def write_shard() -> None:
+            if not out_m:
+                return
+            tensors = {
+                "moments": torch.cat(out_m).contiguous(),
+                "moments_flip": torch.cat(out_f).contiguous(),
+                "label": torch.cat(out_l).contiguous(),
+                "uid": torch.cat(out_u).contiguous(),
+            }
+            path = os.path.join(cache, f"latents-{self.split}-{rank:03d}-{state['shard']:05d}.safetensors")
+            save_file(tensors, path, metadata={"img_size": str(self.img_size), "vae": self.vae})
+            out_m.clear(); out_f.clear(); out_l.clear(); out_u.clear()
+            state["count"] = 0
+            state["shard"] += 1
+
+        for imgs, labels, uids in loader:
+            imgs = imgs.to(device, non_blocking=True)
+            with torch.no_grad():
+                out_m.append(vae.encode(imgs).latent_dist.parameters.cpu().half())
+                out_f.append(vae.encode(imgs.flip(dims=[3])).latent_dist.parameters.cpu().half())
+            out_l.append(labels.to(torch.int16))
+            out_u.append(uids.to(torch.uint8))
+            state["count"] += imgs.shape[0]
+            if bar is not None:
+                bar.update(imgs.shape[0])
+            if state["count"] >= self.shard_size:
+                write_shard()
+        write_shard()
+        if bar is not None:
+            bar.close()
+        del vae
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # Mark this rank done; local rank 0 waits for all ranks, then writes the manifest.
+        open(done_flag, "w").close()
+        if rank == 0:
+            _wait_for(lambda: len(glob.glob(done_glob)) >= world)
+            _write_manifest(cache, self.split, self.img_size, self.vae)
+            for p in glob.glob(done_glob):
+                os.remove(p)
+            os.remove(clean_flag)
+        else:
+            _wait_for(lambda: os.path.exists(manifest_path))
 
     def _get_latent(self, index: int) -> tuple[torch.Tensor, int]:
         index = self._indices[index]  # map filtered index back to the raw sample
@@ -234,9 +306,9 @@ class ImageNet1K(BaseTextImageDataset):
         return super().__getitem__(index)
 
 
-# ==============================================================================
-# Preprocessing: encode raw images to VAE latents and write the cache (torchrun).
-# ==============================================================================
+# --------------------------------------------------------------------------------
+# Preprocessing helpers: image transform, manifest writer, parallel decode stream
+# --------------------------------------------------------------------------------
 
 def _center_crop_arr(pil_image: Image.Image, image_size: int) -> Image.Image:
     """Center-crop a PIL image to a square of image_size (DiT/MeanFlow style)."""
@@ -281,133 +353,33 @@ def _write_manifest(cache_dir: str, split: str, img_size: int, vae_name: str) ->
     print(f"✅ Wrote manifest: {total} samples across {len(shards)} shards -> {path}")
 
 
-def build_latent_cache(
-    root: str,
-    split: str,
-    img_size: int,
-    cache_dir: str,
-    vae_name: str,
-    read_batch: int,
-    vae_batch: int,
-    shard_size: int,
-    rank: int,
-    world: int,
-    device: torch.device,
-) -> None:
-    """Encode this rank's parquet shards to fp16 VAE latents and save them.
+class _ParquetImageStream(torch.utils.data.IterableDataset):
+    """Stream (image_tensor, label, uid) from parquet; files are split across workers.
 
-    Uses the caller's distributed context (does not init/destroy the group); rank 0
-    writes the manifest last and a barrier guards loading right after.
+    Each worker reads whole files sequentially (good parquet locality) and does the
+    JPEG decode + transform, so decoding runs in parallel and overlaps GPU encoding.
     """
-    import torch.distributed as dist
-    from diffusers.models import AutoencoderKL
-    from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
-    from safetensors.torch import save_file
 
-    distributed = dist.is_available() and dist.is_initialized()
-    vae = AutoencoderKL.from_pretrained(vae_name).to(device).eval()
-    transform = _build_transform(img_size)
-    class_text = load_class_text(root)
-    os.makedirs(cache_dir, exist_ok=True)
+    def __init__(self, files: list[str], img_size: int, class_text: list[str] | None,
+                 read_batch: int) -> None:
+        self.files = files
+        self.img_size = img_size
+        self.class_text = class_text
+        self.read_batch = read_batch
 
-    my_files = split_files(root, split)[rank::world]
-
-    # Pending encode batch and output buffers (one shard flushed at shard_size).
-    img_batch: list[torch.Tensor] = []
-    lab_batch: list[int] = []
-    uid_batch: list[np.ndarray] = []
-    out_m, out_f, out_l, out_u = [], [], [], []
-    state = {"count": 0, "shard": 0}
-
-    @torch.no_grad()
-    def flush_encode() -> None:
-        if not img_batch:
-            return
-        x = torch.stack(img_batch).to(device)
-        moments = DiagonalGaussianDistribution(vae._encode(x)).parameters
-        flip = DiagonalGaussianDistribution(vae._encode(x.flip(dims=[3]))).parameters
-        out_m.append(moments.cpu().half())
-        out_f.append(flip.cpu().half())
-        out_l.append(torch.tensor(lab_batch, dtype=torch.int16))
-        out_u.append(np.stack(uid_batch))
-        state["count"] += len(img_batch)
-        img_batch.clear(); lab_batch.clear(); uid_batch.clear()
-
-    def write_shard() -> None:
-        if not out_m:
-            return
-        tensors = {
-            "moments": torch.cat(out_m).contiguous(),
-            "moments_flip": torch.cat(out_f).contiguous(),
-            "label": torch.cat(out_l).contiguous(),
-            "uid": torch.from_numpy(np.concatenate(out_u)).contiguous(),
-        }
-        path = os.path.join(cache_dir, f"latents-{split}-{rank:03d}-{state['shard']:05d}.safetensors")
-        save_file(tensors, path, metadata={"img_size": str(img_size), "vae": vae_name})
-        print(f"[rank {rank}] wrote {tensors['label'].shape[0]} samples -> {os.path.basename(path)}")
-        out_m.clear(); out_f.clear(); out_l.clear(); out_u.clear()
-        state["count"] = 0
-        state["shard"] += 1
-
-    for f in my_files:
-        for batch in pq.ParquetFile(f).iter_batches(batch_size=read_batch, columns=["image", "label"]):
-            for img_struct, label in zip(batch.column("image").to_pylist(),
-                                         batch.column("label").to_pylist()):
-                image_bytes = img_struct["bytes"]
-                image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-                text = class_text[label] if class_text else None
-                uid = BaseTextImageDataset.compute_md5(image_bytes=image_bytes, text=text, label=label)
-                img_batch.append(transform(image))
-                lab_batch.append(label)
-                uid_batch.append(np.frombuffer(bytes.fromhex(uid), dtype=np.uint8))
-                if len(img_batch) >= vae_batch:
-                    flush_encode()
-                    if state["count"] >= shard_size:
-                        write_shard()
-    flush_encode()
-    write_shard()
-
-    if distributed:
-        dist.barrier()  # all shards written before the manifest scan
-    if rank == 0:
-        _write_manifest(cache_dir, split, img_size, vae_name)
-    if distributed:
-        dist.barrier()  # manifest visible to every rank before loading
-
-    del vae
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    def __iter__(self):
+        info = torch.utils.data.get_worker_info()
+        files = self.files if info is None else self.files[info.id::info.num_workers]
+        transform = _build_transform(self.img_size)
+        for f in files:
+            for batch in pq.ParquetFile(f).iter_batches(batch_size=self.read_batch, columns=["image", "label"]):
+                for img_struct, label in zip(batch.column("image").to_pylist(),
+                                             batch.column("label").to_pylist()):
+                    image_bytes = img_struct["bytes"]
+                    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+                    text = self.class_text[label] if self.class_text else None
+                    uid = BaseTextImageDataset.compute_md5(image_bytes=image_bytes, text=text, label=label)
+                    uid_arr = np.frombuffer(bytes.fromhex(uid), dtype=np.uint8).copy()
+                    yield transform(image), label, uid_arr
 
 
-def preprocess(args: argparse.Namespace) -> None:
-    """Standalone entry: init the process group, build the cache, tear it down."""
-    import torch.distributed as dist
-
-    dist.init_process_group(backend="nccl")
-    rank, world = dist.get_rank(), dist.get_world_size()
-    device = torch.device(f"cuda:{int(os.environ['LOCAL_RANK'])}")
-    torch.cuda.set_device(device)
-    build_latent_cache(args.root, args.split, args.img_size, args.cache_dir,
-                       args.vae, args.read_batch, args.vae_batch, args.shard_size,
-                       rank, world, device)
-    dist.destroy_process_group()
-
-
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Encode ImageNet-1K to VAE latents")
-    p.add_argument("--root", required=True, help="Dataset root (contains data/ and classes.py)")
-    p.add_argument("--cache_dir", required=True, help="Output dir for latent shards + manifest")
-    p.add_argument("--split", default="train", choices=["train", "validation", "test"])
-    p.add_argument("--img_size", type=int, default=256)
-    p.add_argument("--vae", default="stabilityai/sd-vae-ft-ema")
-    p.add_argument("--read_batch", type=int, default=256, help="Parquet read batch size")
-    p.add_argument("--vae_batch", type=int, default=64, help="VAE encode batch size")
-    p.add_argument("--shard_size", type=int, default=8192, help="Samples per output shard")
-    return p.parse_args()
-
-
-if __name__ == "__main__":
-    if "RANK" not in os.environ:
-        raise RuntimeError("Launch with torchrun, e.g. torchrun --nproc_per_node=8 -m "
-                           "nexus_align.datasets.imagenet_1k --root ... --cache_dir ...")
-    preprocess(parse_args())

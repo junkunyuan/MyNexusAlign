@@ -2,6 +2,8 @@
 
 Keep code as simple as possible.
 
+Strictly follow the current code style when writing new code and comments.
+
 ## Docstrings
 
 Write concise docstrings. Avoid unnecessary detail.

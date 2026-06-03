@@ -8,7 +8,7 @@ pip install pyinstrument
 
 export NCCL_DEBUG=WARN
 
-source /opt/tiger/junkun_tools/merlin/ENV.sh
+source /opt/tiger/junkun.yuan/junkun_tools/merlin/ENV.sh
 
 # The VAE latent cache is built automatically on first run: if cfg.data.cache_dir is
 # empty, ImageNet1K preprocesses the parquet data in-place, then loads the latents.

@@ -13,5 +13,6 @@ cache_dir: /opt/tiger/MyNexusAlign/data_and_model/ILSVRC/imagenet-1k/latents
 # VAE-latent preprocessing knobs (used only when the cache is built on the fly).
 vae: stabilityai/sd-vae-ft-ema
 read_batch: 256
-vae_batch: 64
+vae_batch: 256
 shard_size: 8192
+preprocess_workers: 8     # parallel JPEG-decode workers, overlapped with GPU encode
