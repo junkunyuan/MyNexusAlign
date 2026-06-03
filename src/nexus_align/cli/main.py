@@ -1,6 +1,5 @@
 """CLI entry: Hydra-configured entry point with environment setup."""
 
-import inspect
 import os
 from copy import deepcopy
 from omegaconf import OmegaConf
@@ -58,13 +57,7 @@ def main(cfg, device):
     drop_last = cfg.data.drop_last
     cache_dir = cfg.data.cache_dir
 
-    # Instantiate the dataset by passing only the config keys its constructor accepts,
-    # so different datasets (lmdb_latents, imagenet-1k, ...) can be selected via config.
-    dataset_cls = registry.get("dataset", cfg.data.name)
-    data_cfg = OmegaConf.to_container(cfg.data, resolve=True)
-    dataset_params = inspect.signature(dataset_cls).parameters
-    dataset_kwargs = {k: v for k, v in data_cfg.items() if k in dataset_params}
-    train_dataset = dataset_cls(**dataset_kwargs)
+    train_dataset = registry.get("dataset", cfg.data.name)(cfg)
     sampler = torch.utils.data.distributed.DistributedSampler(
         train_dataset, num_replicas=world_size, rank=rank, shuffle=True,
     )

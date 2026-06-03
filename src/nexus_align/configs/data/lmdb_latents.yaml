@@ -1,7 +1,0 @@
-name: lmdb_latents
-lmdb_path: /opt/tiger/imagenet_train_latents.lmdb
-flip_prob: 0.5     # probability of returning horizontally-flipped moments
-num_workers: 4
-sample_ratio: 1.0
-drop_last: true
-cache_dir: null

@@ -57,36 +57,26 @@ def _wait_for(condition: Callable[[], bool], timeout: float = 7200.0, interval: 
 class ImageNet1K(BaseTextImageDataset):
     """ImageNet-1K dataset."""
 
-    def __init__(
-        self,
-        root: str,
-        split: str = "train",
-        img_size: int = 256,
-        flip_prob: float = 0.5,
-        cache_dir: str | None = None,
-        image_transform: Callable | None = None,
-        text_transform: Callable | None = None,
-        sample_ratio: float | int | None = None,
-        dedup: bool = False,
-        vae: str = "stabilityai/sd-vae-ft-ema",
-        read_batch: int = 256,
-        vae_batch: int = 64,
-        shard_size: int = 8192,
-        preprocess_workers: int = 8,
-    ) -> None:
-        super().__init__(image_transform, text_transform, sample_ratio, dedup)
-        self.root = root
-        self.split = split
-        self.img_size = img_size
-        self.flip_prob = flip_prob
-        self.cache_dir = cache_dir
-        self.vae = vae
-        self.read_batch = read_batch
-        self.vae_batch = vae_batch
-        self.shard_size = shard_size
-        self.preprocess_workers = preprocess_workers
+    def __init__(self, cfg) -> None:
+        data = cfg.data
+        super().__init__(
+            image_transform=None,
+            text_transform=None,
+            sample_ratio=data.sample_ratio,
+            dedup=data.get("dedup", False),
+        )
+        self.root = data.root
+        self.split = data.split
+        self.img_size = data.img_size
+        self.flip_prob = data.flip_prob
+        self.cache_dir = data.cache_dir
+        self.vae = data.vae
+        self.read_batch = data.read_batch
+        self.vae_batch = data.vae_batch
+        self.shard_size = data.shard_size
+        self.preprocess_workers = data.preprocess_workers
 
-        if cache_dir is not None:
+        if self.cache_dir is not None:
             self._init_latent_mode()
         else:
             self._init_raw_mode()
