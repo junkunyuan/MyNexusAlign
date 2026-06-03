@@ -1,9 +1,11 @@
 """Environment setup: distributed init, logging, seed, and config for train/eval."""
 
 import os
+from datetime import datetime
 from omegaconf import OmegaConf, open_dict
 
 import torch
+import torch.distributed as dist
 
 from nexus_align.engine.logger import init_log
 from nexus_align.engine.tracker import init_wandb
@@ -18,10 +20,13 @@ def prepare_env(cfg) -> torch.device:
 
     # Update configs
     with open_dict(cfg):
-        base_log_dir = cfg.log.log_dir
-        log_dir = os.path.join(base_log_dir, cfg.log.exp_info)
-        cfg.common.project_path = os.getcwd().split(log_dir)[0]
-        cfg.log.log_dir = os.path.join(cfg.common.project_path, log_dir)  # use abs path
+        if cfg.log.timestamp:
+            # Append rank-0 launch time so runs sharing a prefix never overwrite.
+            ts = [datetime.now().strftime("%Y%m%d-%H%M%S")]
+            dist.broadcast_object_list(ts, src=0)
+            cfg.log.exp_info = f"{cfg.log.exp_info}_{ts[0]}"
+        cfg.common.project_path = os.getcwd()
+        cfg.log.log_dir = os.path.abspath(os.path.join(cfg.log.log_dir, cfg.log.exp_info))
         cfg.common.world_size = world_size
         cfg.common.rank = rank
 
@@ -50,6 +55,7 @@ def prepare_env(cfg) -> torch.device:
 
     # Save configs
     if rank == 0:
+        os.makedirs(cfg.log.log_dir, exist_ok=True)
         config_save_path = os.path.join(cfg.log.log_dir, "config.yaml")
         OmegaConf.save(config=cfg, resolve=True, f=config_save_path)
         print(f"💾 Saved configs to <{config_save_path}>")

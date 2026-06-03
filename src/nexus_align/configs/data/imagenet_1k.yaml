@@ -15,4 +15,4 @@ vae: stabilityai/sd-vae-ft-ema
 read_batch: 256
 vae_batch: 256
 shard_size: 8192
-preprocess_workers: 8     # parallel JPEG-decode workers, overlapped with GPU encode
+preprocess_workers: 8

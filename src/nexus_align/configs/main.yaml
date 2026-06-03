@@ -4,6 +4,7 @@ defaults:
   - model: sit
   - data: imagenet_1k
   - algorithm: meanflow
+  - override hydra/job_logging: none  # logging is configured by init_log instead
   - _self_
 
 exp_mode: train  # "train" or "eval"
@@ -15,6 +16,7 @@ common:
 
 log:
   exp_info: default
+  timestamp: true
   log_dir: logs
   wandb:
     entity: null
@@ -23,7 +25,8 @@ log:
     wandb_offline: true
 
 hydra:
+  output_subdir: null
   run:
-    dir: ${log.log_dir}/${log.exp_info}
+    dir: .
   job:
-    chdir: true
+    chdir: false
