@@ -11,9 +11,10 @@ import torch.distributed as dist
 from PIL import Image
 from tqdm import tqdm
 from diffusers.models import AutoencoderKL
+from omegaconf import OmegaConf
 
 import nexus_align.models  # noqa: F401  # registers model factories on import
-from nexus_align.models.sit import SiT_models
+from nexus_align.models.meanflow_sit import MeanFlowSiT_models
 from nexus_align.registry import registry
 from nexus_align.engine.distributed import init_dist_env
 from nexus_align.eval.sampler import meanflow_sampler
@@ -47,11 +48,15 @@ def main(args):
 
     # Build model from the registry and load the EMA weights.
     latent_size = args.resolution // 8
-    model = registry.get("model", args.model)(
-        input_size=latent_size,
-        num_classes=args.num_classes,
-        use_cfg=True,
-    ).to(device)
+    # cfg_prob > 0 enables CFG (the model factory reads cfg.model.cfg_prob).
+    cfg = OmegaConf.create({
+        "model": {
+            "resolution": args.resolution,
+            "num_classes": args.num_classes,
+            "cfg_prob": 1.0,
+        }
+    })
+    model = registry.get("model", args.model)(cfg).to(device)
     state_dict = torch.load(args.ckpt, map_location=device)["ema"]
     model.load_state_dict(state_dict)
     model.eval()
@@ -144,7 +149,7 @@ def parse_args():
     p.add_argument("--global-seed", type=int, default=0)
     p.add_argument("--ckpt", type=str, required=True, help="Path to a MeanFlow checkpoint.")
     p.add_argument("--sample-dir", type=str, default="samples")
-    p.add_argument("--model", type=str, choices=list(SiT_models.keys()), default="SiT-L/2")
+    p.add_argument("--model", type=str, choices=list(MeanFlowSiT_models.keys()), default="SiT-L/2")
     p.add_argument("--num-classes", type=int, default=1000)
     p.add_argument("--resolution", type=int, choices=[256, 512], default=256)
     p.add_argument("--per-proc-batch-size", type=int, default=32)

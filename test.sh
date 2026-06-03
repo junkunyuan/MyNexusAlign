@@ -1,25 +1,30 @@
 #!/bin/bash
 set -e
 
+source /opt/tiger/junkun.yuan/junkun_tools/merlin/ENV.sh
+
 export PYTHONPATH="$(pwd)/src:$PYTHONPATH"
+export NCCL_DEBUG=WARN
+
+mkdir -p data_and_model
+LOCAL_DST="data_and_model/ILSVRC"
+HDFS_SRC=${SG}junkun/data_and_model/open_source/ILSVRC
+
+if [[ -e "$LOCAL_DST" ]]; then
+  echo "ImageNet 已存在,跳过下载: $LOCAL_DST"
+else
+  mkdir -p data_and_model
+  hdfs dfs -get -t 1024 "$HDFS_SRC" "$LOCAL_DST"
+  echo "完成ImageNet拷贝"
+fi
+
 
 pip install lmdb hydra-core
 pip install pyinstrument
 
-export NCCL_DEBUG=WARN
-
-source /opt/tiger/junkun.yuan/junkun_tools/merlin/ENV.sh
-
-# The VAE latent cache is built automatically on first run: if cfg.data.cache_dir is
-# empty, ImageNet1K preprocesses the parquet data in-place, then loads the latents.
-
 # fuser -k -9 ${MASTER_PORT}/tcp 2>/dev/null || true
 # pkill -9 -f "src/nexus_align/cli/main.py" 2>/dev/null || true
 # pkill -9 -f "torchrun.*--master_port ${MASTER_PORT}" 2>/dev/null || true
-if fuser "${MASTER_PORT}"/tcp >/dev/null 2>&1; then
-    echo "⚠️  [警告] 端口 ${MASTER_PORT} 没清干净,仍被占用!torchrun 很可能报 EADDRINUSE。"
-    echo "⚠️  请在所有节点手动清理:pkill -9 -f 'src/nexus_align/cli/main.py'; pkill -9 -f torchrun; fuser -k -9 ${MASTER_PORT}/tcp"
-fi
 
 torchrun \
     --nnodes ${NNODES} \

@@ -48,21 +48,13 @@ def amp_autocast(dtype):
 def main(cfg, device):
     rank = cfg.common.rank
 
-    # --------------------------------------------------------------------------------
     # 1. Prepare dataset
-    # --------------------------------------------------------------------------------
     train_dataset = registry.get("dataset", cfg.data.name)(cfg)
     dataloader = build_dataloader(cfg, train_dataset, mode="train")
     print("✅ Prepared training dataset")
 
-    # --------------------------------------------------------------------------------
     # 2. Prepare models
-    # --------------------------------------------------------------------------------
-    model = registry.get("model", cfg.model.name)(
-        input_size=cfg.model.resolution // 8,
-        num_classes=cfg.model.num_classes,
-        use_cfg=cfg.model.cfg_prob > 0,
-    ).to(device)
+    model = registry.get("model", cfg.model.name)(cfg).to(device)
     print("✅ Prepared model")
     
     # --------------------------------------------------------------------------------

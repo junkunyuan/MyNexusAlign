@@ -5,7 +5,7 @@ train:
   grad_accu_step: 1
   shuffle: true
   drop_last: true
-  epochs: 240
+  epochs: 2
   learning_rate: 2.8e-4
   adam_beta1: 0.9
   adam_beta2: 0.95
