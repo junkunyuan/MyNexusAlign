@@ -54,6 +54,10 @@ def prepare_env(cfg) -> torch.device:
     set_seed(seed)
     set_deterministic(cfg.common.deterministic)
 
+    # Allow TF32 on matmul and cudnn for faster training on Ampere+ GPUs
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
     # Save configs
     if rank == 0:
         os.makedirs(cfg.log.log_dir, exist_ok=True)

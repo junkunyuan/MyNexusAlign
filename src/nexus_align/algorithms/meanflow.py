@@ -1,4 +1,11 @@
-"""MeanFlow algorithm: mean-velocity flow-matching loss with JVP bootstrap."""
+"""
+MeanFlow algorithm: mean-velocity flow-matching loss with JVP bootstrap.
+
+References:
+    - MeanFlow:
+        - Paper: Mean Flows for One-step Generative Modeling
+        - Unofficial code: https://github.com/zhuyu-cs/MeanFlow
+"""
 
 import torch
 import numpy as np
@@ -13,40 +20,26 @@ class SILoss:
     and adaptive loss weighting.
     """
 
-    def __init__(
-            self,
-            path_type="linear",
-            weighting="uniform",
-            # New parameters
-            time_sampler="logit_normal",  # Time sampling strategy: "uniform" or "logit_normal"
-            time_mu=-0.4,                 # Mean parameter for logit_normal distribution
-            time_sigma=1.0,               # Std parameter for logit_normal distribution
-            ratio_r_not_equal_t=0.75,     # Ratio of samples where r≠t
-            adaptive_p=1.0,               # Power param for adaptive weighting
-            label_dropout_prob=0.1,       # Drop out label
-            # CFG related params
-            cfg_omega=1.0,                # CFG omega param, default 1.0 means no CFG
-            cfg_kappa=0.0,                # CFG kappa param for mixing class-cond and uncond u
-            cfg_min_t=0.0,                # Minium CFG trigger time
-            cfg_max_t=0.8,                # Maximum CFG trigger time
-            ):
-        self.weighting = weighting
-        self.path_type = path_type
+    def __init__(self, cfg):
+        loss_cfg = cfg.algorithm.loss
+
+        self.path_type = loss_cfg.get("path_type", "linear")  # interpolant: "linear" or "cosine"
+        self.weighting = loss_cfg.get("weighting", "adaptive")  # loss weighting: "uniform" or "adaptive"
 
         # Time sampling config
-        self.time_sampler = time_sampler
-        self.time_mu = time_mu
-        self.time_sigma = time_sigma
-        self.ratio_r_not_equal_t = ratio_r_not_equal_t
-        self.label_dropout_prob = label_dropout_prob
+        self.time_sampler = loss_cfg.get("time_sampler", "logit_normal")  # "uniform" or "logit_normal"
+        self.time_mu = loss_cfg.get("time_mu", -0.4)  # logit_normal mean
+        self.time_sigma = loss_cfg.get("time_sigma", 1.0)  # logit_normal std
+        self.ratio_r_not_equal_t = loss_cfg.get("ratio_r_not_equal_t", 0.25)  # ratio of samples where r≠t
+        self.label_dropout_prob = cfg.model.get("cfg_prob", 0.1)  # classifier-free guidance
         # Adaptive weight config
-        self.adaptive_p = adaptive_p
+        self.adaptive_p = loss_cfg.get("adaptive_p", 1.0)  # power for adaptive weighting
 
         # CFG config
-        self.cfg_omega = cfg_omega
-        self.cfg_kappa = cfg_kappa
-        self.cfg_min_t = cfg_min_t
-        self.cfg_max_t = cfg_max_t
+        self.cfg_omega = loss_cfg.get("cfg_omega", 0.2)  # CFG omega, 1.0 means no CFG
+        self.cfg_kappa = loss_cfg.get("cfg_kappa", 0.92)  # CFG kappa for mixing class-cond and uncond u
+        self.cfg_min_t = loss_cfg.get("cfg_min_t", 0.0)  # minimum CFG trigger time
+        self.cfg_max_t = loss_cfg.get("cfg_max_t", 0.8)  # maximum CFG trigger time
 
 
     def interpolant(self, t):

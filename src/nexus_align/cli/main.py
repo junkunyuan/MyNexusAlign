@@ -57,13 +57,8 @@ def main(cfg, device):
     model = registry.get("model", cfg.model.name)(cfg).to(device)
     print("✅ Prepared model")
     
-    # --------------------------------------------------------------------------------
     # 3. Prepare algorithms
-    # --------------------------------------------------------------------------------
-    loss_fn = registry.get("algorithm", cfg.algorithm.name)(
-        label_dropout_prob=cfg.model.cfg_prob,
-        **cfg.algorithm.loss,
-    )
+    loss_fn = registry.get("algorithm", cfg.algorithm.name)(cfg)
     print("✅ Prepared algorithm")
 
     # --------------------------------------------------------------------------------
@@ -71,10 +66,6 @@ def main(cfg, device):
     # --------------------------------------------------------------------------------
     train_cfg = cfg.algorithm.train
     grad_accu_step = train_cfg.grad_accu_step
-
-    if train_cfg.allow_tf32:
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
 
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -84,9 +75,7 @@ def main(cfg, device):
         eps=train_cfg.adam_epsilon,
     )
 
-    # Wrap in DDP (broadcasts rank-0 weights so all ranks share one starting point),
-    # then snapshot EMA so every rank starts from the same parameters.
-    model.train()  # enables label-embedding dropout for classifier-free guidance
+    model.train()
     model = DDP(model, device_ids=[device.index])
     ema = deepcopy(model.module).to(device)
     requires_grad(ema, False)
