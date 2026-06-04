@@ -4,9 +4,10 @@ Keep code as simple as possible.
 
 Strictly follow the current code style when writing new code and comments.
 
-## Docstrings
+## Docstrings and comments
 
 Write concise docstrings. Avoid unnecessary detail.
+Avoid using comments/docstring everytime adding a new function or solving a new problem.
 
 Good example:
 class RemoveColorFilter(logging.Filter):

@@ -17,6 +17,8 @@ import torch
 import torch.nn as nn
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
 
+from nexus_align.models.base_model import BaseModel
+
 
 # --------------------------------------------------------------------------------
 # Core MeanFlowSiT Model
@@ -359,3 +361,16 @@ MeanFlowSiT_models = {
     'MeanFlowSiT-B/2':  MeanFlowSiT_B_2,
     'MeanFlowSiT-B/4':  MeanFlowSiT_B_4
 }
+
+
+# --------------------------------------------------------------------------------
+# FSDP-Wrapped Model for Training
+# --------------------------------------------------------------------------------
+class MeanFlowSiTModel(BaseModel):
+    """MeanFlowSiT network wrapped by BaseModel: FSDP sharding plus an EMA copy."""
+
+    def build_network(self) -> nn.Module:
+        return MeanFlowSiT_models[self.cfg.model.name](self.cfg)
+
+    def wrap_modules(self) -> tuple:
+        return (SiTBlock,)

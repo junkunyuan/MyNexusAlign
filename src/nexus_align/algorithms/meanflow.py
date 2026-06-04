@@ -9,7 +9,22 @@ References:
 
 import torch
 import numpy as np
-from torch.func import jvp
+import torch.autograd.forward_ad as fwAD
+
+
+def jvp(fn, primals, tangents):
+    """
+    Jacobian-vector product via forward-mode AD.
+
+    torch.func.jvp rejects FSDP's in-place unshard ops, so use the eager
+    forward_ad API instead. Runs under no_grad: the JVP output is only used
+    as a detached target, and an unused autograd graph through an FSDP
+    module corrupts its backward-hook state.
+    """
+    with torch.no_grad(), fwAD.dual_level():
+        duals = tuple(fwAD.make_dual(p, t) for p, t in zip(primals, tangents))
+        out, dudt = fwAD.unpack_dual(fn(*duals))
+    return out, dudt
 
 
 class SILoss:
@@ -121,101 +136,48 @@ class SILoss:
         v_t = d_alpha_t * images + d_sigma_t * noises
         time_diff = (t - r).view(-1, 1, 1, 1)
 
-        u_target = torch.zeros_like(v_t)
-
         u = model(z_t, r, t, **model_kwargs)
 
+        # JVP tangent: CFG-mixed velocity for CFG samples, plain v_t otherwise.
+        # NOTE: keep the number of model forwards identical on all ranks; FSDP
+        # unshard collectives deadlock on data-dependent branching.
+        v_hat = v_t
+        if model_kwargs.get('y') is not None:
+            # Apply CFG within the time window, excluding unconditional samples
+            cfg_time_mask = (t >= self.cfg_min_t) & (t <= self.cfg_max_t) & (~unconditional_mask)
+            num_classes = model.module.num_classes
 
-        # Check if CFG should be applied (exclude unconditional samples)
-        cfg_time_mask = (t >= self.cfg_min_t) & (t <= self.cfg_max_t) & (~unconditional_mask)
+            # Compute instantaneous cond/uncond velocities u(z_t, t, t) in one batch
+            combined_kwargs = {}
+            for k, v in model_kwargs.items():
+                if torch.is_tensor(v) and v.shape[0] == batch_size:
+                    combined_kwargs[k] = torch.cat([v, v], dim=0)
+                else:
+                    combined_kwargs[k] = v
+            y = model_kwargs['y']
+            combined_kwargs['y'] = torch.cat([y, torch.full_like(y, num_classes)], dim=0)
 
-        if model_kwargs.get('y') is not None and cfg_time_mask.any():
-            # Split samples into CFG and non-CFG
-            cfg_indices = torch.where(cfg_time_mask)[0]
-            no_cfg_indices = torch.where(~cfg_time_mask)[0]
+            with torch.no_grad():
+                combined_u_at_t = model(
+                    torch.cat([z_t, z_t], dim=0),
+                    torch.cat([t, t], dim=0),
+                    torch.cat([t, t], dim=0),
+                    **combined_kwargs,
+                )
+            u_cond_at_t, u_uncond_at_t = torch.chunk(combined_u_at_t, 2, dim=0)
+            v_tilde = (self.cfg_omega * v_t +
+                    self.cfg_kappa * u_cond_at_t +
+                    (1 - self.cfg_omega - self.cfg_kappa) * u_uncond_at_t)
+            v_hat = torch.where(cfg_time_mask.view(-1, 1, 1, 1), v_tilde, v_t)
 
-            u_target = torch.zeros_like(v_t)
+        def fn_current(z, cur_r, cur_t):
+            return model(z, cur_r, cur_t, **model_kwargs)
 
-            # Process CFG samples
-            if len(cfg_indices) > 0:
-                cfg_z_t = z_t[cfg_indices]
-                cfg_v_t = v_t[cfg_indices]
-                cfg_r = r[cfg_indices]
-                cfg_t = t[cfg_indices]
-                cfg_time_diff = time_diff[cfg_indices]
+        primals = (z_t, r, t)
+        tangents = (v_hat, torch.zeros_like(r), torch.ones_like(t))
+        _, dudt = jvp(fn_current, primals, tangents)
 
-                cfg_kwargs = {}
-                for k, v in model_kwargs.items():
-                    if torch.is_tensor(v) and v.shape[0] == batch_size:
-                        cfg_kwargs[k] = v[cfg_indices]
-                    else:
-                        cfg_kwargs[k] = v
-
-                # Compute v_tilde for CFG samples
-                cfg_y = cfg_kwargs.get('y')
-                num_classes = model.module.num_classes
-
-                cfg_z_t_batch = torch.cat([cfg_z_t, cfg_z_t], dim=0)
-                cfg_t_batch = torch.cat([cfg_t, cfg_t], dim=0)
-                cfg_t_end_batch = torch.cat([cfg_t, cfg_t], dim=0)
-                cfg_y_batch = torch.cat([cfg_y, torch.full_like(cfg_y, num_classes)], dim=0)
-
-                cfg_combined_kwargs = cfg_kwargs.copy()
-                cfg_combined_kwargs['y'] = cfg_y_batch
-
-                with torch.no_grad():
-                    cfg_combined_u_at_t = model(cfg_z_t_batch, cfg_t_batch, cfg_t_end_batch, **cfg_combined_kwargs)
-                    cfg_u_cond_at_t, cfg_u_uncond_at_t = torch.chunk(cfg_combined_u_at_t, 2, dim=0)
-                    cfg_v_tilde = (self.cfg_omega * cfg_v_t +
-                            self.cfg_kappa * cfg_u_cond_at_t +
-                            (1 - self.cfg_omega - self.cfg_kappa) * cfg_u_uncond_at_t)
-
-                # Compute JVP with CFG velocity
-                def fn_current_cfg(z, cur_r, cur_t):
-                    return model(z, cur_r, cur_t, **cfg_kwargs)
-
-                primals = (cfg_z_t, cfg_r, cfg_t)
-                tangents = (cfg_v_tilde, torch.zeros_like(cfg_r), torch.ones_like(cfg_t))
-                _, cfg_dudt = jvp(fn_current_cfg, primals,tangents)
-
-                cfg_u_target = cfg_v_tilde - cfg_time_diff * cfg_dudt
-                u_target[cfg_indices] = cfg_u_target
-
-            # Process non-CFG samples (including unconditional ones)
-            if len(no_cfg_indices) > 0:
-                no_cfg_z_t = z_t[no_cfg_indices]
-                no_cfg_v_t = v_t[no_cfg_indices]
-                no_cfg_r = r[no_cfg_indices]
-                no_cfg_t = t[no_cfg_indices]
-                no_cfg_time_diff = time_diff[no_cfg_indices]
-
-                no_cfg_kwargs = {}
-                for k, v in model_kwargs.items():
-                    if torch.is_tensor(v) and v.shape[0] == batch_size:
-                        no_cfg_kwargs[k] = v[no_cfg_indices]
-                    else:
-                        no_cfg_kwargs[k] = v
-
-                def fn_current_no_cfg(z, cur_r, cur_t):
-                    return model(z, cur_r, cur_t, **no_cfg_kwargs)
-
-                primals = (no_cfg_z_t, no_cfg_r, no_cfg_t)
-                tangents = (no_cfg_v_t, torch.zeros_like(no_cfg_r), torch.ones_like(no_cfg_t))
-                _, no_cfg_dudt = jvp(fn_current_no_cfg,primals,tangents)
-
-                no_cfg_u_target = no_cfg_v_t - no_cfg_time_diff * no_cfg_dudt
-                u_target[no_cfg_indices] = no_cfg_u_target
-        else:
-            # No labels or no CFG applicable samples, use standard JVP
-            primals = (z_t, r, t)
-            tangents = (v_t, torch.zeros_like(r), torch.ones_like(t))
-
-            def fn_current(z, cur_r, cur_t):
-                return model(z, cur_r, cur_t, **model_kwargs)
-
-            _, dudt = jvp(fn_current,primals,tangents)
-
-            u_target = v_t - time_diff * dudt
+        u_target = v_hat - time_diff * dudt
 
         # Detach the target to prevent gradient flow
         error = u - u_target.detach()

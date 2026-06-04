@@ -13,9 +13,7 @@ from tqdm import tqdm
 from diffusers.models import AutoencoderKL
 from omegaconf import OmegaConf
 
-import nexus_align.models  # noqa: F401  # registers model factories on import
 from nexus_align.models.meanflow_sit import MeanFlowSiT_models
-from nexus_align.registry import registry
 from nexus_align.engine.distributed import init_dist_env
 from nexus_align.eval.sampler import meanflow_sampler
 from nexus_align.eval.metrics import compute_metrics_with_cached_stats
@@ -46,7 +44,7 @@ def main(args):
     torch.manual_seed(seed)
     print(f"Starting rank={rank}, seed={seed}, world_size={world_size}.")
 
-    # Build model from the registry and load the EMA weights.
+    # Build the raw network (no FSDP wrapping) and load the EMA weights.
     latent_size = args.resolution // 8
     # cfg_prob > 0 enables CFG (the model factory reads cfg.model.cfg_prob).
     cfg = OmegaConf.create({
@@ -56,7 +54,7 @@ def main(args):
             "cfg_prob": 1.0,
         }
     })
-    model = registry.get("model", args.model)(cfg).to(device)
+    model = MeanFlowSiT_models[args.model](cfg).to(device)
     state_dict = torch.load(args.ckpt, map_location=device)["ema"]
     model.load_state_dict(state_dict)
     model.eval()

@@ -4,3 +4,7 @@ name: MeanFlowSiT-L/2  # one of registry "model" keys: MeanFlowSiT-XL/2, MeanFlo
 resolution: 256  # input image resolution; latent size = resolution // 8 (VAE)
 num_classes: 1000
 cfg_prob: 0.1  # label dropout prob for CFG; use_cfg = cfg_prob > 0
+
+fsdp:
+  strategy: full_shard  # one of: full_shard, shard_grad_op, no_shard, hybrid_shard
+  cpu_offload: false  # offload params and grads to CPU

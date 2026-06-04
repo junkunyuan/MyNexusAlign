@@ -1,14 +1,12 @@
 """CLI entry: Hydra-configured entry point with environment setup."""
 
 import os
-from copy import deepcopy
 from omegaconf import OmegaConf
-from contextlib import nullcontext
 
 import hydra
 import torch
 import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 
 import nexus_align.models  # noqa: F401  # registers model factories on import
@@ -18,25 +16,6 @@ from nexus_align.registry import registry
 from nexus_align.engine.setup import with_env_setup
 from nexus_align.engine.distributed import all_reduce
 from nexus_align.datasets.dist_dataloader import build_dataloader
-
-
-@torch.no_grad()
-def update_ema(ema_model, model, decay=0.9999):
-    """Step the EMA model towards the current (DDP-wrapped) model."""
-    ema_params = dict(ema_model.named_parameters())
-    for name, param in model.named_parameters():
-        ema_params[name.replace("module.", "")].mul_(decay).add_(param.data, alpha=1 - decay)
-
-
-def requires_grad(model, flag=True):
-    """Set requires_grad on all parameters of a model."""
-    for p in model.parameters():
-        p.requires_grad = flag
-
-
-def amp_autocast(dtype):
-    """CUDA autocast context for the given dtype, or a no-op when dtype is None."""
-    return torch.autocast("cuda", dtype=dtype) if dtype is not None else nullcontext()
 
 
 @hydra.main(
@@ -53,10 +32,11 @@ def main(cfg, device):
     dataloader = build_dataloader(cfg, train_dataset, mode="train")
     print("✅ Prepared training dataset")
 
-    # 2. Prepare models
-    model = registry.get("model", cfg.model.name)(cfg).to(device)
+    # 2. Prepare models (FSDP-wrapped with an EMA copy; see BaseModel)
+    model_wrapper = registry.get("model", cfg.model.name)(cfg, device)
+    model = model_wrapper.model
     print("✅ Prepared model")
-    
+
     # 3. Prepare algorithms
     loss_fn = registry.get("algorithm", cfg.algorithm.name)(cfg)
     print("✅ Prepared algorithm")
@@ -67,6 +47,7 @@ def main(cfg, device):
     train_cfg = cfg.algorithm.train
     grad_accu_step = train_cfg.grad_accu_step
 
+    # NOTE: the optimizer must be built on the FSDP-wrapped parameters.
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=train_cfg.learning_rate,
@@ -75,15 +56,8 @@ def main(cfg, device):
         eps=train_cfg.adam_epsilon,
     )
 
-    model.train()
-    model = DDP(model, device_ids=[device.index])
-    ema = deepcopy(model.module).to(device)
-    requires_grad(ema, False)
-    ema.eval()
-
-    # Mixed precision: bf16/no need no GradScaler; fp16 does.
-    amp_dtype = {"no": None, "fp16": torch.float16, "bf16": torch.bfloat16}[train_cfg.mixed_precision]
-    scaler = torch.amp.GradScaler("cuda", enabled=(train_cfg.mixed_precision == "fp16"))
+    # Mixed precision is handled by FSDP (see BaseModel); only fp16 needs a scaler.
+    scaler = ShardedGradScaler(enabled=(train_cfg.mixed_precision == "fp16"))
 
     steps_per_epoch = max(len(dataloader) // grad_accu_step, 1)
     max_train_steps = train_cfg.epochs * steps_per_epoch
@@ -101,9 +75,8 @@ def main(cfg, device):
     if train_cfg.resume_step > 0:
         ckpt_path = os.path.join(ckpt_dir, f"{train_cfg.resume_step:07d}.pt")
         ckpt = torch.load(ckpt_path, map_location="cpu")
-        model.module.load_state_dict(ckpt["model"])
-        ema.load_state_dict(ckpt["ema"])
-        optimizer.load_state_dict(ckpt["opt"])
+        model_wrapper.load_state_dict(ckpt)
+        model_wrapper.load_optim_state_dict(optimizer, ckpt["opt"])
         global_step = ckpt["steps"]
         print(f"Loaded checkpoint from {ckpt_path} (step={global_step})")
 
@@ -126,7 +99,7 @@ def main(cfg, device):
 
         for _ in range(steps_done, steps_per_epoch):
             optimizer.zero_grad(set_to_none=True)
-            for micro_step in range(grad_accu_step):
+            for _ in range(grad_accu_step):
                 moments, labels = next(data_iter)
                 moments = moments.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
@@ -135,21 +108,19 @@ def main(cfg, device):
                     x = DiagonalGaussianDistribution(moments).sample()
                     x = x * latents_scale + latents_bias
 
-                # Sync gradients only on the last micro-step.
-                sync_ctx = nullcontext() if micro_step == grad_accu_step - 1 else model.no_sync()
-                with sync_ctx:
-                    with amp_autocast(amp_dtype):
-                        loss, loss_ref = loss_fn(model, x, dict(y=labels))
-                        loss_mean = loss.mean()
-                        loss_mean_ref = loss_ref.mean()
-                    scaler.scale(loss_mean / grad_accu_step).backward()
+                # FSDP reduce-scatters and accumulates sharded grads each micro-step
+                # (no_sync() is incompatible with use_orig_params=True).
+                loss, loss_ref = loss_fn(model, x, dict(y=labels))
+                loss_mean = loss.mean()
+                loss_mean_ref = loss_ref.mean()
+                scaler.scale(loss_mean / grad_accu_step).backward()
 
             if scaler.is_enabled():
                 scaler.unscale_(optimizer)
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.max_grad_norm)
+            grad_norm = model.clip_grad_norm_(train_cfg.max_grad_norm)
             scaler.step(optimizer)
             scaler.update()
-            update_ema(ema, model, decay=train_cfg.ema_decay)
+            model_wrapper.ema_step(decay=train_cfg.ema_decay)
             global_step += 1
 
             if global_step % 100 == 0:
@@ -164,11 +135,14 @@ def main(cfg, device):
             )
             if should_save:
                 dist.barrier()
+                # Gather full state dicts on all ranks; only rank 0 saves.
+                state_dict = model_wrapper.state_dict()
+                optim_state_dict = model_wrapper.optim_state_dict(optimizer)
                 if rank == 0:
                     checkpoint = {
-                        "model": model.module.state_dict(),
-                        "ema": ema.state_dict(),
-                        "opt": optimizer.state_dict(),
+                        "model": state_dict["model"],
+                        "ema": state_dict["ema"],
+                        "opt": optim_state_dict,
                         "config": OmegaConf.to_container(cfg, resolve=True),
                         "steps": global_step,
                     }
