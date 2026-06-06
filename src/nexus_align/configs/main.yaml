@@ -4,6 +4,7 @@ defaults:
   - model: meanflow_sit
   - data: imagenet_1k
   - algorithm: meanflow
+  - eval: fid
   - override hydra/job_logging: none  # logging is configured by init_log instead
   - _self_
 

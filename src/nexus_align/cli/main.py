@@ -12,6 +12,7 @@ from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 import nexus_align.models  # noqa: F401  # registers model factories on import
 import nexus_align.datasets  # noqa: F401  # registers dataset factories on import
 import nexus_align.algorithms  # noqa: F401  # registers algorithm factories on import
+import nexus_align.eval  # noqa: F401  # registers evaluator factories on import
 from nexus_align.registry import registry
 from nexus_align.engine.setup import with_env_setup
 from nexus_align.engine.distributed import all_reduce
@@ -40,6 +41,13 @@ def main(cfg, device):
     # 3. Prepare algorithms
     loss_fn = registry.get("algorithm", cfg.algorithm.name)(cfg)
     print("✅ Prepared algorithm")
+
+    # 3.5. Prepare evaluator (in-training eval; disabled when both intervals are 0)
+    eval_cfg = cfg.eval
+    evaluator = None
+    if eval_cfg.every_steps > 0 or eval_cfg.every_epochs > 0:
+        evaluator = registry.get("evaluator", eval_cfg.name)(cfg, device)
+        print("✅ Prepared evaluator")
 
     # --------------------------------------------------------------------------------
     # 4. Prepare running
@@ -151,10 +159,15 @@ def main(cfg, device):
                     print(f"Saved checkpoint to {ckpt_path}")
                 dist.barrier()
 
+            if evaluator and eval_cfg.every_steps > 0 and global_step % eval_cfg.every_steps == 0:
+                evaluator.evaluate(model_wrapper.ema, tag=f"{global_step:07d}")
+
             if global_step >= max_train_steps:
                 break
 
         print(f"Completed epoch {epoch + 1}/{train_cfg.epochs}")
+        if evaluator and eval_cfg.every_epochs > 0 and (epoch + 1) % eval_cfg.every_epochs == 0:
+            evaluator.evaluate(model_wrapper.ema, tag=f"{global_step:07d}")
         if global_step >= max_train_steps:
             break
 

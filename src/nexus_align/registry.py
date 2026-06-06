@@ -7,7 +7,8 @@ COMPONENT_TYPES = (
     "dataset",
     "model",
     "algorithm",
-    "trainer"
+    "trainer",
+    "evaluator"
 )
 
 T = TypeVar("T")
