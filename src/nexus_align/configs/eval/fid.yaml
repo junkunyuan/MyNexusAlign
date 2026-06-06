@@ -1,0 +1,13 @@
+# FID/IS evaluator config (selected by name from the evaluator registry).
+
+name: fid
+every_steps: 0  # in-training eval every N total steps (0 = off)
+every_epochs: 0  # in-training eval every N epochs (0 = off)
+ckpt: null  # checkpoint path for standalone eval (exp_mode=eval)
+sample_dir: null  # where samples/metrics go; default: <log_dir>/eval
+global_seed: 0
+cfg_scale: 1.0  # >1.0 enables CFG at sampling; keep 1.0 for CFG-trained models (cfg_omega < 1)
+num_steps: 1  # number of sampling steps
+num_fid_samples: 50000
+per_proc_batch_size: 32
+fid_statistics_file: fid_stats/adm_in256_stats.npz
