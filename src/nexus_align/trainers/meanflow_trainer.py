@@ -16,8 +16,8 @@ from nexus_align.trainers.base_trainer import BaseTrainer
 class MeanFlowTrainer(BaseTrainer):
     """Train a MeanFlow model: sample VAE latents, regress the MeanFlow loss."""
 
-    def __init__(self, cfg, train_dataloader, model, algorithm) -> None:
-        super().__init__(cfg, train_dataloader, model, algorithm)
+    def __init__(self, cfg, train_dataset, model, algorithm) -> None:
+        super().__init__(cfg, train_dataset, model, algorithm)
         train_cfg = self.train_cfg
         device = model.device
 

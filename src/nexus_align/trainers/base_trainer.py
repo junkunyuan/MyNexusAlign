@@ -3,10 +3,11 @@
 from abc import ABC, abstractmethod
 from contextlib import nullcontext
 
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 from nexus_align.models.base_model import BaseModel
 from nexus_align.algorithms.base_algorithm import BaseAlgorithm
+from nexus_align.datasets.dist_dataloader import build_dataloader
 
 
 class BaseTrainer(ABC):
@@ -17,12 +18,12 @@ class BaseTrainer(ABC):
     def __init__(
         self,
         cfg,
-        train_dataloader: DataLoader = None,
+        train_dataset: Dataset = None,
         model: BaseModel = None,
         algorithm: BaseAlgorithm = None,
     ) -> None:
         self.cfg = cfg
-        self.train_dataloader = train_dataloader
+        self.train_dataset = train_dataset
         self.model = model
         self.algorithm = algorithm
         self.optimizer = None
@@ -31,9 +32,15 @@ class BaseTrainer(ABC):
         self.train_cfg = cfg.algorithm.train
         self.grad_accum_steps = self.train_cfg.grad_accu_step
         self.max_epochs = self.train_cfg.epochs
-        self.steps_per_epoch = max(len(train_dataloader) // self.grad_accum_steps, 1)
+
+        self.train_dataloader = self.get_train_dataloader()
+        self.steps_per_epoch = max(len(self.train_dataloader) // self.grad_accum_steps, 1)
         self.max_total_steps = self.max_epochs * self.steps_per_epoch
         self.total_step = 0
+
+    def get_train_dataloader(self) -> DataLoader:
+        """Build the training dataloader from the train dataset."""
+        return build_dataloader(self.cfg, self.train_dataset, mode="train")
 
     @abstractmethod
     def train_mode(self):
