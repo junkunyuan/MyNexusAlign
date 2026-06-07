@@ -3,7 +3,6 @@
 import os
 
 import hydra
-import torch.distributed as dist
 
 from nexus_align.registry import registry
 from nexus_align.engine.setup import with_env_setup
@@ -34,8 +33,6 @@ def main(cfg):
 
     # 5. Run training
     trainer.run()
-
-    dist.barrier()
     print("✅ Training completed")
 
 

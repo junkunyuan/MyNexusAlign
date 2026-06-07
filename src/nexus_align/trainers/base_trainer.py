@@ -3,6 +3,7 @@
 from abc import ABC, abstractmethod
 from contextlib import nullcontext
 
+import torch.distributed as dist
 from torch.utils.data import DataLoader, Dataset
 
 from nexus_align.models.base_model import BaseModel
@@ -139,6 +140,7 @@ class BaseTrainer(ABC):
 
         for epoch in range(start_epoch, self.max_epochs):
             print(f"\n{'=' * 80}\n🚀 Epoch {epoch + 1}/{self.max_epochs}\n{'=' * 80}")
+            reached_max_steps = False
             self.train_mode()
             self.train_dataloader.sampler.set_epoch(epoch)
             data_iter = iter(self.train_dataloader)
@@ -184,6 +186,11 @@ class BaseTrainer(ABC):
                 self.save_checkpoint()
 
                 if self.total_step >= self.max_total_steps:
-                    return
+                    reached_max_steps = True
+                    break
 
+            if reached_max_steps:
+                break
             print(f"Completed epoch {epoch + 1}/{self.max_epochs}")
+
+        dist.barrier()
