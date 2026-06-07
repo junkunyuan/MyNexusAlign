@@ -9,11 +9,11 @@
 #   bash eval.sh --min-step 50000      # only evaluate ckpts >= step 50000
 #   bash eval.sh --dry-run             # print plan, don't run
 #
-# Pre-downloaded weights (VAE + Inception) are pulled from HDFS on first use and
-# cached locally; subsequent runs skip the download/extract step.
+# Pre-downloaded weights (VAE + Inception + FID stats) live under data_and_model/
+# and are linked into the local HF/torch caches on first use, so eval runs offline.
 set -euo pipefail
 
-EXP_NAME=${EXP_NAME:-default_20260603-225827}
+EXP_NAME=${EXP_NAME:-default_20260607-164128}
 OUTPUT_DIR=${OUTPUT_DIR:-logs}
 MODEL=${MODEL:-MeanFlowSiT-L/2}
 RESOLUTION=${RESOLUTION:-256}
@@ -23,41 +23,33 @@ NUM_STEPS=${NUM_STEPS:-1}
 NUM_FID_SAMPLES=${NUM_FID_SAMPLES:-50000}
 PER_PROC_BATCH=${PER_PROC_BATCH:-32}
 NPROC=${NPROC:-${ARNOLD_WORKER_GPU:-8}}
-FID_STATS=${FID_STATS:-./fid_stats/adm_in256_stats.npz}
-
-# HDFS location of pre-downloaded VAE / Inception weights. Override with
-# HDFS_MODELS_DIR=hdfs://harunasg/... if running on the SG cluster.
-HDFS_MODELS_DIR=${HDFS_MODELS_DIR:-${FR}junkun/data_and_model/open_source}
+FID_STATS=${FID_STATS:-./data_and_model/fid_stats/adm_in256_stats.npz}
 
 cd "$(dirname "$0")"
 export PYTHONPATH="$(pwd)/src:${PYTHONPATH:-}"
 
-# ---- Prepare offline model caches (idempotent) --------------------------------
+# ---- Link offline model caches from data_and_model (idempotent) ---------------
+DM="$(pwd)/data_and_model"
 VAE_DIR="$HOME/.cache/huggingface/hub/models--stabilityai--sd-vae-ft-ema"
 INCEPTION_FILE="$HOME/.cache/torch/hub/checkpoints/weights-inception-2015-12-05-6726825d.pth"
 
-# VAE: ready iff the snapshots dir contains at least one safetensors file
+# VAE: link the local snapshot into the HF hub cache for offline from_pretrained.
 if compgen -G "$VAE_DIR/snapshots/*/diffusion_pytorch_model.safetensors" > /dev/null; then
     echo "[skip] sd-vae-ft-ema already cached at $VAE_DIR"
 else
-    echo "[get]  sd-vae-ft-ema from $HDFS_MODELS_DIR/sd-vae-ft-ema.zip"
-    mkdir -p "$HOME/.cache/huggingface/hub"
-    hdfs dfs -get -t 32 "$HDFS_MODELS_DIR/sd-vae-ft-ema.zip" /tmp/sd-vae-ft-ema.zip
-    unzip -q -o /tmp/sd-vae-ft-ema.zip -d "$HOME/.cache/huggingface/hub"
-    rm -f /tmp/sd-vae-ft-ema.zip
-    echo "[done] sd-vae-ft-ema -> $VAE_DIR"
+    echo "[link] sd-vae-ft-ema from $DM/stabilityai/sd-vae-ft-ema"
+    mkdir -p "$VAE_DIR/snapshots/local" "$VAE_DIR/refs"
+    ln -sfn "$DM/stabilityai/sd-vae-ft-ema"/* "$VAE_DIR/snapshots/local/"
+    echo local > "$VAE_DIR/refs/main"
 fi
 
-# Inception (torch_fidelity): single .pth file
+# Inception (torch_fidelity): link the single .pth into the torch hub cache.
 if [[ -s "$INCEPTION_FILE" ]]; then
     echo "[skip] inception weights already cached at $INCEPTION_FILE"
 else
-    echo "[get]  inception weights from $HDFS_MODELS_DIR/weights-inception-2015-12-05-6726825d.pth"
+    echo "[link] inception weights from $DM/torch_fidelity"
     mkdir -p "$(dirname "$INCEPTION_FILE")"
-    hdfs dfs -get -t 32 \
-        "$HDFS_MODELS_DIR/weights-inception-2015-12-05-6726825d.pth" \
-        "$INCEPTION_FILE"
-    echo "[done] inception -> $INCEPTION_FILE"
+    ln -sfn "$DM/torch_fidelity/weights-inception-2015-12-05-6726825d.pth" "$INCEPTION_FILE"
 fi
 
 # Force offline mode so HF/transformers never reach the network even if available.

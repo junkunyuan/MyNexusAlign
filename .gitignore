@@ -9,3 +9,5 @@ data_and_model/
 
 # To-delete
 line-log/
+*.md
+test.py
