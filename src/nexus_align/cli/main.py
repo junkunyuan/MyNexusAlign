@@ -5,10 +5,6 @@ import os
 import hydra
 import torch.distributed as dist
 
-import nexus_align.models  # noqa: F401  # registers model factories on import
-import nexus_align.datasets  # noqa: F401  # registers dataset factories on import
-import nexus_align.algorithms  # noqa: F401  # registers algorithm factories on import
-import nexus_align.trainers  # noqa: F401  # registers trainer factories on import
 from nexus_align.registry import registry
 from nexus_align.engine.setup import with_env_setup
 from nexus_align.datasets.dist_dataloader import build_dataloader
