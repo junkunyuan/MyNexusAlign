@@ -39,7 +39,8 @@ def main(args):
     assert torch.cuda.is_available(), "Evaluation with DDP requires at least one GPU"
     torch.set_grad_enabled(False)
 
-    world_size, rank, device = init_dist_env()
+    world_size, rank = init_dist_env()
+    device = torch.device("cuda", torch.cuda.current_device())
     seed = args.global_seed * world_size + rank
     torch.manual_seed(seed)
     print(f"Starting rank={rank}, seed={seed}, world_size={world_size}.")

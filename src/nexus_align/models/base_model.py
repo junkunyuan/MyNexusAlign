@@ -38,9 +38,9 @@ class BaseModel(ABC):
     Both share the same sharding, so EMA updates run directly on local shards.
     """
 
-    def __init__(self, cfg, device: torch.device) -> None:
+    def __init__(self, cfg) -> None:
         self.cfg = cfg
-        self.device = device
+        self.device = torch.device("cuda", torch.cuda.current_device())
 
         network = self.build_network()
         ema = deepcopy(network)

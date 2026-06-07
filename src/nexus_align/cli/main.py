@@ -16,14 +16,14 @@ from nexus_align.datasets.dist_dataloader import build_dataloader
     version_base="1.3",
 )
 @with_env_setup
-def main(cfg, device):
+def main(cfg):
     # 1. Prepare dataset
     train_dataset = registry.get("dataset", cfg.data.name)(cfg)
     train_dataloader = build_dataloader(cfg, train_dataset, mode="train")
     print("✅ Prepared training dataset")
 
-    # 2. Prepare model (FSDP-wrapped with an EMA copy; see BaseModel)
-    model = registry.get("model", cfg.model.name)(cfg, device)
+    # 2. Prepare model
+    model = registry.get("model", cfg.model.name)(cfg)
     print("✅ Prepared model")
 
     # 3. Prepare algorithm
@@ -34,7 +34,7 @@ def main(cfg, device):
     trainer = registry.get("trainer", cfg.algorithm.trainer)(cfg, train_dataloader, model, algorithm)
     print("✅ Prepared trainer")
 
-    # 5. Run training (evaluation is decoupled; run eval.sh on saved checkpoints)
+    # 5. Run training
     trainer.run()
 
     dist.barrier()

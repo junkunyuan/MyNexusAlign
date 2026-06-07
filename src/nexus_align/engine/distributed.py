@@ -11,10 +11,10 @@ import torch.distributed as dist
 _PG_TIMEOUT = timedelta(hours=2)
 
 
-def init_dist_env() -> tuple[int, int, torch.device]:
+def init_dist_env() -> tuple[int, int]:
     """
     Initialize the distributed process group.
-    Returns (world_size, rank, device).
+    Returns (world_size, rank); use torch.cuda.current_device() for the device.
     """
     if all(var in os.environ for var in ["WORLD_SIZE", "RANK", "LOCAL_RANK"]):
         world_size = int(os.environ["WORLD_SIZE"])
@@ -40,7 +40,7 @@ def init_dist_env() -> tuple[int, int, torch.device]:
     else:
         dist_safe_exit(1, message="❌ Initialize distributed environment failed")
 
-    return world_size, rank, device
+    return world_size, rank
 
 
 def dist_safe_exit(exit_code: int = 0, message: str = "") -> None:

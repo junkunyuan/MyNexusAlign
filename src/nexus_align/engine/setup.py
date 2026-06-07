@@ -13,10 +13,10 @@ from nexus_align.engine.distributed import init_dist_env
 from nexus_align.utils.seed import set_seed, set_deterministic
 
 
-def prepare_env(cfg) -> torch.device:
+def prepare_env(cfg) -> None:
     """Prepare common environment: distributed init, logging, seed, config."""
     # Initialize distributed environment
-    world_size, rank, device = init_dist_env()
+    world_size, rank = init_dist_env()
 
     # Update configs
     with open_dict(cfg):
@@ -64,19 +64,17 @@ def prepare_env(cfg) -> torch.device:
         config_save_path = os.path.join(cfg.log.log_dir, "config.yaml")
         OmegaConf.save(config=cfg, resolve=True, f=config_save_path)
         print(f"💾 Saved configs to <{config_save_path}>")
-    
-    return device
 
 
 def with_env_setup(main_fn):
     """
-    Decorator that runs prepare_env and passes the resolved torch device.
+    Decorator that runs prepare_env before the wrapped function.
 
-    The decorated function must accept (cfg, device: torch.device).
+    The decorated function must accept (cfg).
     """
 
     def wrapper(cfg):
-        device = prepare_env(cfg)
-        return main_fn(cfg, device)
+        prepare_env(cfg)
+        return main_fn(cfg)
 
     return wrapper
