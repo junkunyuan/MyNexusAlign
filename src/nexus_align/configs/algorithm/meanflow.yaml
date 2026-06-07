@@ -1,4 +1,5 @@
 name: meanflow
+trainer: meanflow  # trainer registry key
 
 train:
   train_batch_size: 2048

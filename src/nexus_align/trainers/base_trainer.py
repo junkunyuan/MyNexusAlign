@@ -1,11 +1,9 @@
-"""Base trainer: abstract interface for trainers."""
+"""Base trainer: abstract interface and the unified training loop."""
 
 from abc import ABC, abstractmethod
 from contextlib import nullcontext
 
-from torch.optim import Optimizer
 from torch.utils.data import DataLoader
-from torch.optim.lr_scheduler import LRScheduler
 
 from nexus_align.models.base_model import BaseModel
 from nexus_align.algorithms.base_algorithm import BaseAlgorithm
@@ -13,29 +11,29 @@ from nexus_align.algorithms.base_algorithm import BaseAlgorithm
 
 class BaseTrainer(ABC):
     """
-    Base trainer.
+    Base trainer: run() drives the training loop; subclasses fill in the steps.
     """
 
     def __init__(
         self,
+        cfg,
         train_dataloader: DataLoader = None,
-        valid_dataloader: DataLoader = None,
-        eval_dataloader: DataLoader = None,
         model: BaseModel = None,
         algorithm: BaseAlgorithm = None,
-        optimizer: Optimizer = None,
-        lr_scheduler: LRScheduler = None
     ) -> None:
+        self.cfg = cfg
         self.train_dataloader = train_dataloader
-        self.valid_dataloader = valid_dataloader
-        self.eval_dataloader = eval_dataloader
         self.model = model
         self.algorithm = algorithm
-        self.optimizer = optimizer
-        self.lr_scheduler = lr_scheduler
+        self.optimizer = None
+        self.lr_scheduler = None
 
-        self.tracker = None  # TODO
-        self.checkpoint_manager = None  # TODO
+        self.train_cfg = cfg.algorithm.train
+        self.grad_accum_steps = self.train_cfg.grad_accu_step
+        self.max_epochs = self.train_cfg.epochs
+        self.steps_per_epoch = max(len(train_dataloader) // self.grad_accum_steps, 1)
+        self.max_total_steps = self.max_epochs * self.steps_per_epoch
+        self.total_step = 0
 
     @abstractmethod
     def train_mode(self):
@@ -43,14 +41,7 @@ class BaseTrainer(ABC):
         Switch to the training mode.
         """
         ...
-    
-    @abstractmethod
-    def eval_mode(self):
-        """
-        Switch to the evaluation mode.
-        """
-        ...
-    
+
     @abstractmethod
     def zero_grad(self):
         """
@@ -59,30 +50,19 @@ class BaseTrainer(ABC):
         ...
 
     @abstractmethod
-    def validate_model(self):
-        """
-        Validate the model.
-
-        Call self.eval_mode() before validating the model.
-        """
-        ...
-    
-    @abstractmethod
-    def evaluate_model(self):
-        """
-        Evaluate the model.
-
-        Call self.eval_mode() before evaluating the model.
-        """
-        ...
-    
-    @abstractmethod
     def forward(self, data):
         """
-        Forward data to the model.
+        Forward data to the model. Return a dict with at least "loss".
         """
         ...
-    
+
+    @abstractmethod
+    def backward(self, loss):
+        """
+        Backward the loss.
+        """
+        ...
+
     @abstractmethod
     def no_sync(self):
         """
@@ -97,28 +77,42 @@ class BaseTrainer(ABC):
         Clip gradients.
         """
         ...
-    
+
     @abstractmethod
     def optimizer_step(self):
         """
         Optimizer updates one step.
         """
         ...
-    
+
     @abstractmethod
     def lr_scheduler_step(self):
         """
         LR scheduler updates one step.
         """
         ...
-    
+
     @abstractmethod
     def ema_step(self):
         """
         EMA model updates one step.
         """
         ...
-    
+
+    @abstractmethod
+    def load_checkpoint(self):
+        """
+        Resume model/optimizer states and total_step from a checkpoint.
+        """
+        ...
+
+    @abstractmethod
+    def save_checkpoint(self):
+        """
+        Save a checkpoint (the subclass decides whether this step needs one).
+        """
+        ...
+
     @abstractmethod
     def update_log(self):
         """
@@ -128,112 +122,61 @@ class BaseTrainer(ABC):
 
     def run(self) -> None:
         """
-        Run the loop.
+        Run the training loop.
         """
-        assert self.train_dataloader is not None or self.eval_dataloader is not None
+        assert self.train_dataloader is not None
 
-        # Start evaluating
-        if self.train_dataloader is None and self.eval_dataloader is not None:
-            self.evaluate_model()
-            return
+        self.load_checkpoint()
+        start_epoch = self.total_step // self.steps_per_epoch
+        print(f"steps_per_epoch={self.steps_per_epoch}, max_total_steps={self.max_total_steps}")
 
-        # Start training
-        if self.train_dataloader is not None:
-            for epoch in range(self.tracker.max_epochs):
-                # Skip the resumed epoch
-                if epoch < self.tracker.epoch:
-                    continue
-                
-                # Start a new epoch
-                print(f"\n{'=' * 80}\n🚀 Epoch {epoch}/{self.tracker.max_epochs}\n{'=' * 80}")
-                self.train_dataloader.sampler.set_epoch(epoch)
-                self.tracker.start("epoch")
-                num_steps_per_epoch = len(self.train_dataloader) // self.tracker.grad_accum_steps
-                train_data_iterator = iter(self.train_dataloader)
-                for step in range(num_steps_per_epoch):
-                    # Skip the resumed step
-                    if step < self.tracker.step:
-                        for _ in range(self.tracker.grad_accum_steps):
-                            next(train_data_iterator)
-                        continue
-                    # Exit if reaching the total steps
-                    if self.tracker.total_step >= self.tracker.max_total_step:
-                        return
-                    
-                    # Start a new step
-                    epoch_f = f"Epoch {self.tracker.epoch}/{self.tracker.max_epochs}"
-                    step_f = f"Step {self.tracker.step}/{num_steps_per_epoch}"
-                    total_step_f = f"Total step {self.tracker.total_step}/{self.tracker.max_total_step}"
-                    print(f"\n{'=' * 80}\n🚀  {epoch_f}  {step_f}  {total_step_f}\n{'=' * 80}")
-                    
-                    # Start validating
-                    is_in_val_step = self.tracker.total_step in self.tracker.validate_steps
-                    is_in_val_interval = self.tracker.total_step % self.tracker.validate_interval == 0
-                    is_init_val_needed = self.tracker.init_validate
-                    if is_in_val_step or is_in_val_interval or is_init_val_needed:
-                        self.validate_model()
-                        self.tracker.init_validate = False
+        for epoch in range(start_epoch, self.max_epochs):
+            print(f"\n{'=' * 80}\n🚀 Epoch {epoch + 1}/{self.max_epochs}\n{'=' * 80}")
+            self.train_mode()
+            self.train_dataloader.sampler.set_epoch(epoch)
+            data_iter = iter(self.train_dataloader)
 
-                    # Start evaluating
-                    is_in_eval_step = self.tracker.total_step in self.tracker.evaluate_steps
-                    is_in_eval_interval = self.tracker.total_step % self.tracker.evaluate_interval == 0
-                    is_init_eval_needed = self.tracker.init_evaluate
-                    if is_in_eval_step or is_in_eval_interval or is_init_eval_needed:
-                        self.evaluate_model()
-                        self.tracker.init_evaluate = False
+            # In a resumed epoch, skip the batches already consumed.
+            steps_done = self.total_step % self.steps_per_epoch if epoch == start_epoch else 0
+            for _ in range(steps_done * self.grad_accum_steps):
+                next(data_iter, None)
 
-                    self.tracker.start("step")
-                    self.train_mode()
-                    self.zero_grad()
-                    for micro_step in range(self.tracker.grad_accum_steps):
-                        # 1. Get data
-                        data = next(train_data_iterator)
+            for _ in range(steps_done, self.steps_per_epoch):
+                # 1. Forward and backward with gradient accumulation
+                self.zero_grad()
+                for micro_step in range(self.grad_accum_steps):
+                    data = next(data_iter)
 
-                        # Only synchronize gradients on the last micro-step for efficiency
-                        sync_context = (
-                            nullcontext()
-                            if micro_step == self.tracker.grad_accum_steps - 1
-                            else self.no_sync()
-                        )
-                        with sync_context:
-                            # 2. Model forward
-                            forward_results = self.forward(data)
-
-                            # 3. Model backward
-                            (forward_results["loss"] / self.tracker.grad_accum_steps).backward()
-
-                    # 4. Clip gradients
-                    self.clip_grad()
-
-                    # 5. Optimizer step
-                    self.optimizer_step()
-
-                    # 6. LR scheduler step
-                    self.lr_scheduler_step()
-
-                    # 7. Update EMA
-                    self.ema_step()
-
-                    # 8. Save checkpoints
-                    # NOTE: checkpoint_manager will decide whether to save based on train_state
-                    self.checkpoint_manager.save(
-                        model={
-                            "model": self.model,
-                            "ema": self.ema,
-                            "optimizer": self.optimizer,
-                            "lr_scheduler": self.lr_scheduler
-                        },
-                        train_state={
-                            "epoch": self.tracker.epoch,
-                            "step": self.tracker.step,
-                            "total_step": self.tracker.total_step,
-                        }
+                    # Only synchronize gradients on the last micro-step for efficiency
+                    sync_context = (
+                        nullcontext()
+                        if micro_step == self.grad_accum_steps - 1
+                        else self.no_sync()
                     )
+                    with sync_context:
+                        forward_results = self.forward(data)
+                        self.backward(forward_results["loss"] / self.grad_accum_steps)
 
-                    # 9. Update logs
-                    self.update_log()
+                # 2. Clip gradients
+                self.clip_grad()
 
-                    self.tracker.end("step")
-                
-                self.tracker.end("epoch")
+                # 3. Optimizer step
+                self.optimizer_step()
+
+                # 4. LR scheduler step
+                self.lr_scheduler_step()
+
+                # 5. Update EMA
+                self.ema_step()
+                self.total_step += 1
+
+                # 6. Update logs
                 self.update_log()
+
+                # 7. Save checkpoints
+                self.save_checkpoint()
+
+                if self.total_step >= self.max_total_steps:
+                    return
+
+            print(f"Completed epoch {epoch + 1}/{self.max_epochs}")

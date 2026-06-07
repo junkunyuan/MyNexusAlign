@@ -1,8 +1,6 @@
 # FID/IS evaluator config (selected by name from the evaluator registry).
 
 name: fid
-every_steps: 0  # in-training eval every N total steps (0 = off)
-every_epochs: 0  # in-training eval every N epochs (0 = off)
 ckpt: null  # checkpoint path for standalone eval (exp_mode=eval)
 sample_dir: null  # where samples/metrics go; default: <log_dir>/eval
 global_seed: 0

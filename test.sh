@@ -33,5 +33,4 @@ torchrun \
     --master_addr ${MASTER_ADDRESS} \
     --master_port ${MASTER_PORT3} \
     src/nexus_align/cli/main.py \
-    data=imagenet_1k \
-    eval.every_steps=100
+    data=imagenet_1k
