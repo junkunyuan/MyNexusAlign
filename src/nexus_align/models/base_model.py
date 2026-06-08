@@ -15,19 +15,13 @@ from torch.distributed.fsdp import (
 )
 
 from nexus_align.engine.distributed import reduce_scalar
+from nexus_align.utils.dtype import DTYPE_MAP
 
 SHARDING_STRATEGY_MAP = {
+    "no_shard": ShardingStrategy.NO_SHARD,
     "full_shard": ShardingStrategy.FULL_SHARD,
     "shard_grad_op": ShardingStrategy.SHARD_GRAD_OP,
-    "no_shard": ShardingStrategy.NO_SHARD,
-    "hybrid_shard": ShardingStrategy.HYBRID_SHARD,
-}
-
-PARAM_DTYPE_MAP = {
-    "no": None,
-    "fp32": torch.float32,
-    "fp16": torch.float16,
-    "bf16": torch.bfloat16,
+    "hybrid_shard": ShardingStrategy.HYBRID_SHARD
 }
 
 
@@ -44,10 +38,10 @@ class BaseModel(ABC):
         self.cfg_model = cfg_model
         self.device = torch.device("cuda", torch.cuda.current_device())
 
+        # Build model and ema
         model = self.build_model()
-        model_dtype = PARAM_DTYPE_MAP[cfg_model.get("dtype", "fp32")]
-        if model_dtype is not None:
-            model = model.to(model_dtype)
+        model_dtype = DTYPE_MAP[cfg_model.get("dtype", "fp32")]
+        model = model.to(model_dtype)
         ema = deepcopy(model)
         ema.requires_grad_(False)
 
@@ -68,31 +62,37 @@ class BaseModel(ABC):
 
     def fsdp_wrap(self, module: nn.Module, model_name: str = "model") -> FSDP:
         """Wrap a module with torch FSDP (Fully Sharded Data Parallel)."""
-        fsdp_cfg = self.cfg_model.fsdp
-        strategy = fsdp_cfg.get("strategy", "full_shard")
-        if strategy not in SHARDING_STRATEGY_MAP:
-            raise ValueError(f"❌ Invalid FSDP sharding strategy: {strategy}")
-        cpu_offload = fsdp_cfg.get("cpu_offload", False)
+        cfg_model_fsdp = self.cfg_model.fsdp
+        fsdp_kwargs = {}
 
+        # FSDP strategy
+        strategy = cfg_model_fsdp.get("strategy", "no_shard")
+        fsdp_kwargs["sharding_strategy"] = SHARDING_STRATEGY_MAP[strategy]
+
+        # CPU offload
+        cpu_offload = cfg_model_fsdp.get("cpu_offload", False)
+        fsdp_kwargs["cpu_offload"] = CPUOffload(True) if cpu_offload else None
+
+        # Device ID
+        fsdp_kwargs["device_id"] = torch.cuda.current_device()
+
+        # Wrap policy
         wrap_modules = self.wrap_modules()
-
         def auto_wrap_policy(module, recurse, nonwrapped_numel):
             if recurse:
                 return True
+            if wrap_modules is None:
+                return True
             return any(isinstance(module, m) for m in wrap_modules)
+        fsdp_kwargs["auto_wrap_policy"] = auto_wrap_policy
 
-        # param_dtype is the compute dtype; reduce defaults to fp32, buffer follows param.
-        param_dtype = PARAM_DTYPE_MAP[fsdp_cfg.get("param_dtype", "bf16")]
-        reduce_dtype = buffer_dtype = None
-        if param_dtype is None:
-            mixed_precision = None
-        else:
-            reduce_dtype = PARAM_DTYPE_MAP[fsdp_cfg.get("reduce_dtype", "fp32")]
-            buffer_key = fsdp_cfg.get("buffer_dtype", None)
-            buffer_dtype = PARAM_DTYPE_MAP[buffer_key] if buffer_key is not None else param_dtype
-            mixed_precision = MixedPrecision(
-                param_dtype=param_dtype, reduce_dtype=reduce_dtype, buffer_dtype=buffer_dtype
-            )
+        # Mixed precision of model, buffer, and reduce
+        param_dtype = DTYPE_MAP[cfg_model_fsdp.get("param_dtype", "fp32")]
+        buffer_dtype = DTYPE_MAP[cfg_model_fsdp.get("buffer_dtype", param_dtype)]
+        reduce_dtype = DTYPE_MAP[cfg_model_fsdp.get("reduce_dtype", "bf16")]
+        fsdp_kwargs["mixed_precision"] = MixedPrecision(
+            param_dtype=param_dtype, reduce_dtype=reduce_dtype, buffer_dtype=buffer_dtype
+        )
 
         module = FSDP(
             module,
@@ -102,7 +102,7 @@ class BaseModel(ABC):
             cpu_offload=CPUOffload(True) if cpu_offload else None,
             device_id=self.device,
             sync_module_states=True,  # ranks seed differently; broadcast rank-0 init
-            use_orig_params=True,  # allow mixed requires_grad (e.g. frozen pos_embed)
+            use_orig_params=True,  # flexible, e.g., with torch.compile
         )
 
         total_params = reduce_scalar(sum(p.numel() for p in module.parameters()), "sum") / 1e9

@@ -7,8 +7,7 @@ cfg_prob: 0.1  # label dropout prob for CFG; use_cfg = cfg_prob > 0
 dtype: fp32  # model master weight dtype
 
 fsdp:
-  strategy: full_shard  # one of: full_shard, shard_grad_op, no_shard, hybrid_shard
+  strategy: full_shard  # one of: no_shard, full_shard, shard_grad_op, hybrid_shard
   cpu_offload: false  # offload params and grads to CPU
-  param_dtype: bf16  # weight dtype
-  buffer_dtype: null  # buffer dtype
-  reduce_dtype: fp32  # gradient reduction dtype
+  param_dtype: fp32  # weight dtype
+  reduce_dtype: bf16  # gradient reduction dtype
