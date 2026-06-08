@@ -20,6 +20,19 @@ else
   echo "完成ImageNet拷贝"
 fi
 
+VAE_DST="data_and_model/stabilityai/sd-vae-ft-ema"
+VAE_SRC=${SG}junkun/data_and_model/open_source/sd-vae-ft-ema.zip
+if [[ -e "$VAE_DST/config.json" ]]; then
+  echo "VAE 已存在,跳过下载: $VAE_DST"
+else
+  hdfs dfs -get "$VAE_SRC" data_and_model/sd-vae-ft-ema.zip
+  unzip -q data_and_model/sd-vae-ft-ema.zip -d data_and_model/_vae_tmp
+  mkdir -p "$VAE_DST"
+  cp -rL data_and_model/_vae_tmp/models--stabilityai--sd-vae-ft-ema/snapshots/*/* "$VAE_DST"/
+  rm -rf data_and_model/_vae_tmp data_and_model/sd-vae-ft-ema.zip
+  echo "完成VAE拷贝"
+fi
+
 torchrun \
     --nnodes ${NNODES} \
     --node_rank ${NODE_RANK} \
