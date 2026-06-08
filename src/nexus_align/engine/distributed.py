@@ -6,15 +6,15 @@ from datetime import timedelta
 import torch
 import torch.distributed as dist
 
-# Generous collective timeout: in-runtime latent preprocessing can take many minutes
-# and desynchronizes ranks, so the first training collective must tolerate the wait.
-_PG_TIMEOUT = timedelta(hours=2)
-
 
 def init_dist_env() -> tuple[int, int]:
     """
     Initialize the distributed process group.
-    Returns (world_size, rank); use torch.cuda.current_device() for the device.
+
+    ``torchrun`` is expected for distributed running.
+    Environment variables "WORLD_SIZE", "RANK", and "LOCAL_RANK" are expected.
+    
+    Returns (world_size, rank).
     """
     if all(var in os.environ for var in ["WORLD_SIZE", "RANK", "LOCAL_RANK"]):
         world_size = int(os.environ["WORLD_SIZE"])
@@ -29,12 +29,12 @@ def init_dist_env() -> tuple[int, int]:
             world_size=world_size,
             rank=rank,
             device_id=device,
-            timeout=_PG_TIMEOUT,
+            timeout=timedelta(minutes=120),
         )
 
-        torch.cuda.set_device(local_rank)
+        torch.cuda.set_device(device)
 
-        prefix = "🌐 Distributed environment initialization:  "
+        prefix = "🌐 Distributed environment init:  "
         print(f"{prefix}world_size {world_size}  rank {rank}  device {device}")
         dist.barrier()
     else:
@@ -56,71 +56,17 @@ def dist_safe_exit(exit_code: int = 0, message: str = "") -> None:
     os._exit(exit_code)
 
 
-def all_reduce(
-    x: int | float | list | torch.Tensor,
-    op: str = "sum",
-) -> int | float | list | torch.Tensor:
-    """All-reduce a Python scalar, list, or tensor across distributed ranks.
+def reduce_scalar(x: float | torch.Tensor, op: str = "mean") -> float:
+    """Reduce a scalar across ranks; returns a python float.
 
-    It performs an in-place ``torch.distributed.all_reduce`` on an internal 
-    tensor copy and returns the reduced result without modifying the input.
-
-    Supported operations are ``sum``, ``mean``, ``max``, and ``min``.
-    ``mean`` is implemented as ``SUM / world_size`` for backend compatible.
-
-    Notes:
-        * All ranks must call it with the same input type, shape, and dtype.
-        * ``x`` will be returned on their original data type and device.
-        * int inputs with ``op="mean"`` return floating-point results.
-
-    Args:
-        x: Input. Support: ``int``, ``float``, ``list``, and ``torch.Tensor``.
-        op: Reduction operation. Support: ``sum``, ``mean``, ``max``, and ``min``.
-
-    Returns:
-        The reduced value, converted back to the original data type and device.
+    ``mean`` is implemented as ``SUM / world_size`` for backend compatibility.
     """
-    if op not in {"sum", "mean", "max", "min"}:
-        raise ValueError(f"❌ Invalid all_reduce op: {op}")
-
-    if not isinstance(x, (int, float, list, torch.Tensor)):
-        raise TypeError(f"❌ Unsupported input type: {type(x)}")
-
-    reduce_op = {
-        "sum": dist.ReduceOp.SUM,
-        "mean": dist.ReduceOp.SUM,
-        "max": dist.ReduceOp.MAX,
-        "min": dist.ReduceOp.MIN,
-    }[op]
-
-    world_size = dist.get_world_size()
-
-    is_tensor = isinstance(x, torch.Tensor)
-    ori_device = x.device if is_tensor else None
-    ori_dtype = x.dtype if is_tensor else None
-
-    if is_tensor:
-        tensor = x.detach().clone().cuda()
-    else:
-        tensor = torch.as_tensor(x, device="cuda")
-
-    if op == "mean" and not tensor.is_floating_point():
-        tensor = tensor.float()
-
-    dist.all_reduce(tensor, op=reduce_op)
-
+    if op not in {"sum", "mean"}:
+        raise ValueError(f"❌ Invalid reduce_scalar op: {op}")
+    
+    t = torch.as_tensor(x, dtype=torch.float64, device="cuda")
+    dist.all_reduce(t, op=dist.ReduceOp.SUM)
     if op == "mean":
-        tensor = tensor / world_size
-
-    if is_tensor:
-        if op == "mean" and not ori_dtype.is_floating_point:
-            return tensor.to(device=ori_device)
-        return tensor.to(device=ori_device, dtype=ori_dtype)
-
-    if isinstance(x, int):
-        return float(tensor.item()) if op == "mean" else int(tensor.item())
-
-    if isinstance(x, float):
-        return float(tensor.item())
-
-    return tensor.tolist()
+        t /= dist.get_world_size()
+    
+    return t.item()

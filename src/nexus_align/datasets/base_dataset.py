@@ -1,7 +1,7 @@
-"""Base dataset: generic image-text dataset."""
+"""Base dataset: generic dataset."""
 
-import hashlib
 import random
+import hashlib
 from typing import Any, TypeVar
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -29,7 +29,7 @@ def sample_items(items: list[T], sample_ratio: float | int | None = None) -> lis
 
 class BaseTextImageDataset(Dataset, ABC):
     """
-    Base image+text+label dataset.
+    Base dataset with image + text + label.
     """
 
     def __init__(
@@ -43,11 +43,11 @@ class BaseTextImageDataset(Dataset, ABC):
         self.text_transform = text_transform
         self.sample_ratio = sample_ratio
         self.dedup = dedup
-        self._indices = None
+        self._indices = None  # Built by build_indices(); maps dataset indices to raw sample indices
 
     @abstractmethod
     def get_raw(self, index: int) -> dict[str, Any]:
-        """Return a raw sample dict."""
+        """Return a raw sample dict with "image", "text", "label"."""
         ...
 
     def build_indices(self, num_items: int) -> None:
@@ -84,7 +84,7 @@ class BaseTextImageDataset(Dataset, ABC):
         return h.hexdigest()
 
     def get_uid(self, raw: dict[str, Any]) -> str:
-        """Content uid of a raw sample dict (image bytes + text + label)."""
+        """Calculate uid of a raw sample dict (image bytes + text + label)."""
         image, image_bytes = raw.get("image"), raw.get("image_bytes")
         if image_bytes is None and image is not None:
             image_bytes = image.tobytes()

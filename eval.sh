@@ -13,7 +13,7 @@
 # and are linked into the local HF/torch caches on first use, so eval runs offline.
 set -euo pipefail
 
-EXP_NAME=${EXP_NAME:-default_20260607-164128}
+EXP_NAME=${EXP_NAME:-default_20260607-213925}
 OUTPUT_DIR=${OUTPUT_DIR:-logs}
 MODEL=${MODEL:-MeanFlowSiT-L/2}
 RESOLUTION=${RESOLUTION:-256}

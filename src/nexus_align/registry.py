@@ -8,7 +8,6 @@ COMPONENT_TYPES = (
     "model",
     "algorithm",
     "trainer",
-    "evaluator"
 )
 
 T = TypeVar("T")
@@ -25,18 +24,24 @@ class Registry:
 
     def __init__(self) -> None:
         self._stores = {ct: {} for ct in COMPONENT_TYPES}
+    
+    def _component_check(self, component_type: str):
+        """Check if component_type is available."""
+        if component_type not in COMPONENT_TYPES:
+            raise KeyError(
+                f"❌ Unknown component_type: {component_type}"
+                f"Available {','.join(COMPONENT_TYPES)}"
+            )
 
     def register(self, component_type: str, name: str, cls: type[T]) -> type[T]:
-        """Register cls under (component_type, name)."""
-        if component_type not in self._stores:
-            self._stores[component_type] = {}
+        """Register class under (component_type, name)."""
+        self._component_check(component_type)
         self._stores[component_type][name] = cls
         return cls
 
     def get(self, component_type: str, name: str) -> type:
         """Return the registered class for (component_type, name)."""
-        if component_type not in self._stores:
-            raise KeyError(f"❌ Unknown component_type: {component_type}")
+        self._component_check(component_type)
         store = self._stores[component_type]
         if name not in store:
             raise KeyError(

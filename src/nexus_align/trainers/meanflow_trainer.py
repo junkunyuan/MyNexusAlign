@@ -9,7 +9,7 @@ import torch.distributed as dist
 from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 
-from nexus_align.engine.distributed import all_reduce
+from nexus_align.engine.distributed import reduce_scalar
 from nexus_align.trainers.base_trainer import BaseTrainer
 
 
@@ -125,7 +125,7 @@ class MeanFlowTrainer(BaseTrainer):
     def update_log(self):
         if self.total_step % 100 != 0:
             return
-        loss = all_reduce(self._loss, "mean").item()
-        loss_ref = all_reduce(self._loss_ref, "mean").item()
-        grad_norm = all_reduce(self._grad_norm, "mean").item()
+        loss = reduce_scalar(self._loss)
+        loss_ref = reduce_scalar(self._loss_ref)
+        grad_norm = reduce_scalar(self._grad_norm)
         print(f"Step {self.total_step}: loss = {loss:.4f}, loss_ref = {loss_ref:.4f}, grad_norm = {grad_norm:.4f}")

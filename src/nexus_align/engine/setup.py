@@ -2,6 +2,8 @@
 
 import os
 from datetime import datetime
+
+import yaml
 from omegaconf import OmegaConf, open_dict
 
 import torch
@@ -20,8 +22,7 @@ def prepare_env(cfg) -> None:
 
     # Update configs
     with open_dict(cfg):
-        if cfg.log.timestamp:
-            # Append rank-0 launch time so runs sharing a prefix never overwrite.
+        if cfg.log.get(timestamp, True):
             ts = [datetime.now().strftime("%Y%m%d-%H%M%S")]
             dist.broadcast_object_list(ts, src=0)
             cfg.log.exp_info = f"{cfg.log.exp_info}_{ts[0]}"
@@ -48,7 +49,7 @@ def prepare_env(cfg) -> None:
 
     # Fix seed
     seed = cfg.common.seed
-    if cfg.exp_mode == "train":
+    if cfg.common.exp_mode == "train":
         seed = cfg.common.seed + rank
         cfg.common.seed = seed
     set_seed(seed)
@@ -60,18 +61,15 @@ def prepare_env(cfg) -> None:
 
     # Save configs
     if rank == 0:
-        os.makedirs(cfg.log.log_dir, exist_ok=True)
         config_save_path = os.path.join(cfg.log.log_dir, "config.yaml")
-        OmegaConf.save(config=cfg, resolve=True, f=config_save_path)
+        container = OmegaConf.to_container(cfg, resolve=True)
+        with open(config_save_path, "w", encoding="utf-8") as f:
+            yaml.dump(container, f, sort_keys=True, allow_unicode=True, indent=2)
         print(f"💾 Saved configs to <{config_save_path}>")
 
 
 def with_env_setup(main_fn):
-    """
-    Decorator that runs prepare_env before the wrapped function.
-
-    The decorated function must accept (cfg).
-    """
+    """Prepare environment before running."""
 
     def wrapper(cfg):
         prepare_env(cfg)

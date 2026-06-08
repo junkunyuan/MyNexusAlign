@@ -1,33 +1,32 @@
 # Top-level config loaded by cli/main.py (config_name="main").
 
 defaults:
-  - model: meanflow_sit
   - data: imagenet_1k
   - algorithm: meanflow
-  - eval: fid
+  - model: meanflow_sit
   - override hydra/job_logging: none  # logging is configured by init_log instead
   - _self_
 
-exp_mode: train  # "train" or "eval"
-
 common:
-  seed: 42
-  debug: false
+  exp_mode: train  # "train" or "eval"
+  seed: 42  # reset to {seed + rank} if exp_mode is "train"
+  debug: false  # if True, run wandb offline mode, enable all-rank console print
   deterministic: true
 
 log:
-  exp_info: default
-  timestamp: true
-  log_dir: logs
+  exp_info: default  # experiment info/name
+  timestamp: true  # if True, append timestamp to exp_info
+  log_dir: logs  # log dir; will reset as the abs path of join(log_dir, exp_info)
   wandb:
-    entity: null
-    project: nexus_align
-    name: null
-    wandb_offline: true
+    entity: null  # wandb entity
+    project: nexus_align  # wandb project
+    name: null  # wandb exp name
+    wandb_offline: true  # use offline mode if wandb_offline is True or online mode failed
 
+# Do NOT change these configs
 hydra:
-  output_subdir: null
+  output_subdir: null  # not create the .hydra/ subdir
   run:
-    dir: .
+    dir: .  # run in the current dir
   job:
-    chdir: false
+    chdir: false  # not change working dir

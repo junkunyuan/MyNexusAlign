@@ -25,7 +25,6 @@ def init_wandb(entity: str, project: str, name: str, wandb_offline: bool, log_di
     """
     wandb_init = False
     if dist.get_rank() == 0:
-        os.makedirs(log_dir, exist_ok=True)
         init_params = {"entity": entity, "project": project, "name": name, "dir": log_dir}
 
         if not wandb_offline:
@@ -43,7 +42,7 @@ def init_wandb(entity: str, project: str, name: str, wandb_offline: bool, log_di
                 print("✅ Wandb initialized (offline mode)")
             except Exception as e:
                 print(f"⚠️ Wandb offline init failed:\n{e}")
-                print("⚠️ Training will continue without wandb logging")
+                print("⚠️ Continue without wandb logging")
     dist.barrier()
 
     return wandb_init

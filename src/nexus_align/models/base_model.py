@@ -17,7 +17,7 @@ from torch.distributed.fsdp import (
     CPUOffload,
 )
 
-from nexus_align.engine.distributed import all_reduce
+from nexus_align.engine.distributed import reduce_scalar
 
 SHARDING_STRATEGY_MAP = {
     "full_shard": ShardingStrategy.FULL_SHARD,
@@ -94,7 +94,7 @@ class BaseModel(ABC):
             use_orig_params=True,  # allow mixed requires_grad (e.g. frozen pos_embed)
         )
 
-        total_params = all_reduce(sum(p.numel() for p in module.parameters()), "sum") / 1e9
+        total_params = reduce_scalar(sum(p.numel() for p in module.parameters()), "sum") / 1e9
         info = [f"📦 Wrapped {model_name} with FSDP:"]
         info += [f"    Total params: {total_params:.4f} B"]
         info += [f"    Strategy: {strategy}"]
