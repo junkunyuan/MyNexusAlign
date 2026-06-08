@@ -116,7 +116,7 @@ class SILoss:
         if model_kwargs.get('y') is not None and self.label_dropout_prob > 0:
             y = model_kwargs['y'].clone()
             batch_size = y.shape[0]
-            num_classes = model.module.num_classes
+            num_classes = model.num_classes
             dropout_mask = torch.rand(batch_size, device=y.device) < self.label_dropout_prob
 
             y[dropout_mask] = num_classes
@@ -145,7 +145,7 @@ class SILoss:
         if model_kwargs.get('y') is not None:
             # Apply CFG within the time window, excluding unconditional samples
             cfg_time_mask = (t >= self.cfg_min_t) & (t <= self.cfg_max_t) & (~unconditional_mask)
-            num_classes = model.module.num_classes
+            num_classes = model.num_classes
 
             # Compute instantaneous cond/uncond velocities u(z_t, t, t) in one batch
             combined_kwargs = {}

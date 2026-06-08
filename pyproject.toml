@@ -42,12 +42,12 @@ dependencies = [
     "timm>=1.0",
     "torchvision>=0.22",
     "torch-fidelity>=0.4",
-    "safetensors>=0.8",
+    "safetensors>=0.7",
     "matplotlib>=3.10",
     "psutil>=7.2",
     "pynvml>=13.0",
     "PyYAML>=6.0",
-    "accelerate>=1.0.1",
+    "accelerate>=1.13",
 ]
 
 [project.urls]

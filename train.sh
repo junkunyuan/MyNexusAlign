@@ -16,6 +16,8 @@ else
   pip install -e .
 fi
 
+pip install -e .
+
 # Prepare data
 mkdir -p data_and_model
 LOCAL_DST="data_and_model/ILSVRC"
