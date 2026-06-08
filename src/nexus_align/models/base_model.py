@@ -40,12 +40,12 @@ class BaseModel(ABC):
     Both share the same sharding, so EMA updates run directly on local shards.
     """
 
-    def __init__(self, cfg) -> None:
-        self.cfg = cfg
+    def __init__(self, cfg_model) -> None:
+        self.cfg_model = cfg_model
         self.device = torch.device("cuda", torch.cuda.current_device())
 
         network = self.build_network()
-        model_dtype = PARAM_DTYPE_MAP[cfg.get("dtype", "fp32")]
+        model_dtype = PARAM_DTYPE_MAP[cfg_model.get("dtype", "fp32")]
         if model_dtype is not None:
             network = network.to(model_dtype)
         ema = deepcopy(network)
@@ -68,7 +68,7 @@ class BaseModel(ABC):
 
     def fsdp_wrap(self, module: nn.Module, model_name: str = "model") -> FSDP:
         """Wrap a module with torch FSDP (Fully Sharded Data Parallel)."""
-        fsdp_cfg = self.cfg.fsdp
+        fsdp_cfg = self.cfg_model.fsdp
         strategy = fsdp_cfg.get("strategy", "full_shard")
         if strategy not in SHARDING_STRATEGY_MAP:
             raise ValueError(f"❌ Invalid FSDP sharding strategy: {strategy}")

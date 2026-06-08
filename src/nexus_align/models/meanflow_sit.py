@@ -27,7 +27,7 @@ class MeanFlowSiT(nn.Module):
     """Diffusion model with a transformer backbone, modified for MeanFlow."""
     def __init__(
         self,
-        cfg,
+        cfg_model,
         patch_size: int = 2,
         in_channels: int = 4,
         hidden_size: int = 1152,
@@ -37,9 +37,9 @@ class MeanFlowSiT(nn.Module):
         class_dropout_prob: float = 0.1,
     ) -> None:
         super().__init__()
-        input_size = cfg.get("resolution", 256) // 8
-        num_classes = cfg.get("num_classes", 1000)
-        use_cfg = cfg.get("cfg_prob", 0) > 0
+        input_size = cfg_model.get("resolution", 256) // 8
+        num_classes = cfg_model.get("num_classes", 1000)
+        use_cfg = cfg_model.get("cfg_prob", 0) > 0
         self.in_channels = in_channels
         self.out_channels = in_channels
         self.patch_size = patch_size
@@ -343,17 +343,17 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim: int, pos: np.ndarray) -> np.nda
 # --------------------------------------------------------------------------------
 # MeanFlowSiT Configs
 # --------------------------------------------------------------------------------
-def MeanFlowSiT_XL_2(cfg, **kwargs) -> MeanFlowSiT:
-    return MeanFlowSiT(cfg, depth=28, hidden_size=1152, patch_size=2, num_heads=16, **kwargs)
+def MeanFlowSiT_XL_2(cfg_model, **kwargs) -> MeanFlowSiT:
+    return MeanFlowSiT(cfg_model, depth=28, hidden_size=1152, patch_size=2, num_heads=16, **kwargs)
 
-def MeanFlowSiT_L_2(cfg, **kwargs) -> MeanFlowSiT:
-    return MeanFlowSiT(cfg, depth=24, hidden_size=1024, patch_size=2, num_heads=16, **kwargs)
+def MeanFlowSiT_L_2(cfg_model, **kwargs) -> MeanFlowSiT:
+    return MeanFlowSiT(cfg_model, depth=24, hidden_size=1024, patch_size=2, num_heads=16, **kwargs)
 
-def MeanFlowSiT_B_2(cfg, **kwargs) -> MeanFlowSiT:
-    return MeanFlowSiT(cfg, depth=12, hidden_size=768, patch_size=2, num_heads=12, **kwargs)
+def MeanFlowSiT_B_2(cfg_model, **kwargs) -> MeanFlowSiT:
+    return MeanFlowSiT(cfg_model, depth=12, hidden_size=768, patch_size=2, num_heads=12, **kwargs)
 
-def MeanFlowSiT_B_4(cfg, **kwargs) -> MeanFlowSiT:
-    return MeanFlowSiT(cfg, depth=12, hidden_size=768, patch_size=4, num_heads=12, **kwargs)
+def MeanFlowSiT_B_4(cfg_model, **kwargs) -> MeanFlowSiT:
+    return MeanFlowSiT(cfg_model, depth=12, hidden_size=768, patch_size=4, num_heads=12, **kwargs)
 
 MeanFlowSiT_models = {
     'MeanFlowSiT-XL/2': MeanFlowSiT_XL_2,
@@ -370,7 +370,7 @@ class MeanFlowSiTModel(BaseModel):
     """MeanFlowSiT network wrapped by BaseModel: FSDP sharding plus an EMA copy."""
 
     def build_network(self) -> nn.Module:
-        return MeanFlowSiT_models[self.cfg.name](self.cfg)
+        return MeanFlowSiT_models[self.cfg_model.name](self.cfg_model)
 
     def wrap_modules(self) -> tuple:
         return (SiTBlock,)

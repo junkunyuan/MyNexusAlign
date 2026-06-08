@@ -16,11 +16,11 @@ from nexus_align.engine.setup import with_env_setup
 @with_env_setup
 def main(cfg):
     # 1. Prepare dataset
-    train_dataset = registry.get("dataset", cfg.data.name)(cfg.data)
+    train_dataset = registry.get("dataset", cfg.data.name)(cfg_data=cfg.data)
     print("✅ Prepared training dataset")
 
     # 2. Prepare model
-    model = registry.get("model", cfg.model.name)(cfg.model)
+    model = registry.get("model", cfg.model.name)(cfg_model=cfg.model)
     print("✅ Prepared model")
 
     # 3. Prepare algorithm
