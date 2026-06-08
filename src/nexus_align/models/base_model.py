@@ -1,47 +1,57 @@
-"""Base model: generic FSDP wrapping and EMA maintenance for models."""
+"""Base model: generic FSDP2 sharding and EMA maintenance for models."""
 
 from copy import deepcopy
 from abc import ABC, abstractmethod
 
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 from torch.distributed.fsdp import (
-    FullyShardedDataParallel as FSDP,
-    FullStateDictConfig,
-    MixedPrecision,
-    ShardingStrategy,
-    StateDictType,
-    CPUOffload,
+    fully_shard,
+    MixedPrecisionPolicy,
+    CPUOffloadPolicy,
+    OffloadPolicy,
+)
+from torch.distributed.device_mesh import init_device_mesh
+from torch.distributed.tensor import DTensor
+from torch.distributed.checkpoint.state_dict import (
+    get_model_state_dict,
+    set_model_state_dict,
+    get_optimizer_state_dict,
+    set_optimizer_state_dict,
+    StateDictOptions,
 )
 
-from nexus_align.engine.distributed import reduce_scalar
 from nexus_align.utils.dtype import DTYPE_MAP
 
-SHARDING_STRATEGY_MAP = {
-    "no_shard": ShardingStrategy.NO_SHARD,
-    "full_shard": ShardingStrategy.FULL_SHARD,
-    "shard_grad_op": ShardingStrategy.SHARD_GRAD_OP,
-    "hybrid_shard": ShardingStrategy.HYBRID_SHARD
-}
+# FSDP2 maps the sharding strategy to reshard_after_forward:
+# full_shard reshards params after forward; shard_grad_op keeps them for backward.
+RESHARD_AFTER_FORWARD = {"full_shard": True, "shard_grad_op": False}
 
 
 class BaseModel(ABC):
     """
-    Base model: builds a model, wraps it with FSDP, and maintains an EMA copy.
+    Base model: builds a model, shards it with FSDP2, and maintains an EMA copy.
 
     Subclasses implement build_model() and wrap_modules(); __init__ then exposes
-    self.model (FSDP-wrapped, trainable) and self.ema (FSDP-wrapped, frozen).
-    Both share the same sharding, so EMA updates run directly on local shards.
+    self.model (sharded, trainable) and self.ema (sharded, frozen). Both share the
+    same mesh and sharding, so EMA updates run directly on local DTensor shards.
     """
 
     def __init__(self, cfg_model) -> None:
         self.cfg_model = cfg_model
         self.device = torch.device("cuda", torch.cuda.current_device())
+        self.mesh = init_device_mesh("cuda", (dist.get_world_size(),))
 
-        # Build model and ema
         model = self.build_model()
         model_dtype = DTYPE_MAP[cfg_model.get("dtype", "fp32")]
-        model = model.to(model_dtype)
+        if model_dtype is not None:
+            model = model.to(model_dtype)
+        model = model.to(self.device)
+        # Ranks seed differently; broadcast rank-0 weights so all ranks start identical.
+        for tensor in list(model.parameters()) + list(model.buffers()):
+            dist.broadcast(tensor.data, src=0)
+
         ema = deepcopy(model)
         ema.requires_grad_(False)
 
@@ -52,65 +62,46 @@ class BaseModel(ABC):
 
     @abstractmethod
     def build_model(self) -> nn.Module:
-        """Build and return the model module (before FSDP wrapping)."""
+        """Build and return the model module (before FSDP sharding)."""
         ...
 
     @abstractmethod
     def wrap_modules(self) -> tuple:
-        """Return the module classes wrapped as FSDP units."""
+        """Return the module classes sharded as individual FSDP units."""
         ...
 
-    def fsdp_wrap(self, module: nn.Module, model_name: str = "model") -> FSDP:
-        """Wrap a module with torch FSDP (Fully Sharded Data Parallel)."""
-        cfg_model_fsdp = self.cfg_model.fsdp
-        fsdp_kwargs = {}
+    def fsdp_wrap(self, module: nn.Module, model_name: str = "model") -> nn.Module:
+        """Shard a module in place with FSDP2 (fully_shard): each wrapped unit, then the root."""
+        fsdp_cfg = self.cfg_model.fsdp
+        strategy = fsdp_cfg.get("strategy", "full_shard")
+        if strategy not in RESHARD_AFTER_FORWARD:
+            raise ValueError(f"❌ Invalid FSDP strategy: {strategy}")
 
-        # FSDP strategy
-        strategy = cfg_model_fsdp.get("strategy", "no_shard")
-        fsdp_kwargs["sharding_strategy"] = SHARDING_STRATEGY_MAP[strategy]
+        # param_dtype is the compute dtype; reduce defaults to fp32 (None disables mixed precision).
+        param_dtype = DTYPE_MAP[fsdp_cfg.get("param_dtype", "bf16")]
+        reduce_dtype = DTYPE_MAP[fsdp_cfg.get("reduce_dtype", "fp32")] if param_dtype else None
+        mp_policy = MixedPrecisionPolicy(param_dtype=param_dtype, reduce_dtype=reduce_dtype)
 
-        # CPU offload
-        cpu_offload = cfg_model_fsdp.get("cpu_offload", False)
-        fsdp_kwargs["cpu_offload"] = CPUOffload(True) if cpu_offload else None
+        cpu_offload = fsdp_cfg.get("cpu_offload", False)
+        fsdp_kwargs = dict(
+            mesh=self.mesh,
+            reshard_after_forward=RESHARD_AFTER_FORWARD[strategy],
+            mp_policy=mp_policy,
+            offload_policy=CPUOffloadPolicy() if cpu_offload else OffloadPolicy(),
+        )
 
-        # Device ID
-        fsdp_kwargs["device_id"] = torch.cuda.current_device()
-
-        # Wrap policy
         wrap_modules = self.wrap_modules()
-        def auto_wrap_policy(module, recurse, nonwrapped_numel):
-            if recurse:
-                return True
-            if wrap_modules is None:
-                return True
-            return any(isinstance(module, m) for m in wrap_modules)
-        fsdp_kwargs["auto_wrap_policy"] = auto_wrap_policy
+        for submodule in module.modules():
+            if isinstance(submodule, wrap_modules):
+                fully_shard(submodule, **fsdp_kwargs)
+        fully_shard(module, **fsdp_kwargs)
 
-        # Mixed precision of model, buffer, and reduce
-        param_dtype = DTYPE_MAP[cfg_model_fsdp.get("param_dtype", "fp32")]
-        buffer_dtype = DTYPE_MAP[cfg_model_fsdp.get("buffer_dtype", param_dtype)]
-        reduce_dtype = DTYPE_MAP[cfg_model_fsdp.get("reduce_dtype", "bf16")]
-        fsdp_kwargs["mixed_precision"] = MixedPrecision(
-            param_dtype=param_dtype, reduce_dtype=reduce_dtype, buffer_dtype=buffer_dtype
-        )
-
-        module = FSDP(
-            module,
-            auto_wrap_policy=auto_wrap_policy,
-            mixed_precision=mixed_precision,
-            sharding_strategy=SHARDING_STRATEGY_MAP[strategy],
-            cpu_offload=CPUOffload(True) if cpu_offload else None,
-            device_id=self.device,
-            sync_module_states=True,  # ranks seed differently; broadcast rank-0 init
-            use_orig_params=True,  # flexible, e.g., with torch.compile
-        )
-
-        total_params = reduce_scalar(sum(p.numel() for p in module.parameters()), "sum") / 1e9
-        info = [f"📦 Wrapped {model_name} with FSDP:"]
+        total_params = sum(p.numel() for p in module.parameters()) / 1e9  # DTensor.numel is global
+        info = [f"📦 Sharded {model_name} with FSDP2:"]
         info += [f"    Total params: {total_params:.4f} B"]
         info += [f"    Strategy: {strategy}"]
         info += [f"    Wrapped modules: {', '.join(m.__name__ for m in wrap_modules)}"]
-        info += [f"    Param/Reduce/Buffer dtype: {param_dtype} / {reduce_dtype} / {buffer_dtype}"]
+        info += [f"    Param/Reduce dtype: {param_dtype} / {reduce_dtype}"]
         info += [f"    CPU offload: {cpu_offload}"]
         print("\n".join(info))
 
@@ -123,26 +114,25 @@ class BaseModel(ABC):
             ema_p.mul_(decay).add_(p.data, alpha=1 - decay)
 
     def state_dict(self) -> dict:
-        """Full model/EMA state dicts, gathered to CPU on rank 0 (call on all ranks)."""
-        full_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-        with FSDP.state_dict_type(self.model, StateDictType.FULL_STATE_DICT, full_config):
-            model_sd = self.model.state_dict()
-        with FSDP.state_dict_type(self.ema, StateDictType.FULL_STATE_DICT, full_config):
-            ema_sd = self.ema.state_dict()
-        return {"model": model_sd, "ema": ema_sd}
+        """Full model/EMA state dicts, gathered to CPU (call on all ranks)."""
+        options = StateDictOptions(full_state_dict=True, cpu_offload=True)
+        return {
+            "model": get_model_state_dict(self.model, options=options),
+            "ema": get_model_state_dict(self.ema, options=options),
+        }
 
     def load_state_dict(self, state_dict: dict) -> None:
-        """Load full model/EMA state dicts (call on all ranks)."""
-        with FSDP.state_dict_type(self.model, StateDictType.FULL_STATE_DICT):
-            self.model.load_state_dict(state_dict["model"])
-        with FSDP.state_dict_type(self.ema, StateDictType.FULL_STATE_DICT):
-            self.ema.load_state_dict(state_dict["ema"])
+        """Load full model/EMA state dicts, broadcasting from rank 0 (call on all ranks)."""
+        options = StateDictOptions(full_state_dict=True, broadcast_from_rank0=True)
+        set_model_state_dict(self.model, state_dict["model"], options=options)
+        set_model_state_dict(self.ema, state_dict["ema"], options=options)
 
     def optim_state_dict(self, optimizer) -> dict:
-        """Full optimizer state dict, gathered on rank 0 (call on all ranks)."""
-        return FSDP.optim_state_dict(self.model, optimizer)
+        """Full optimizer state dict, gathered to CPU (call on all ranks)."""
+        options = StateDictOptions(full_state_dict=True, cpu_offload=True)
+        return get_optimizer_state_dict(self.model, optimizer, options=options)
 
     def load_optim_state_dict(self, optimizer, optim_state_dict: dict) -> None:
-        """Load a full optimizer state dict into the sharded optimizer (call on all ranks)."""
-        optim_state_dict = FSDP.optim_state_dict_to_load(self.model, optimizer, optim_state_dict)
-        optimizer.load_state_dict(optim_state_dict)
+        """Load a full optimizer state dict, broadcasting from rank 0 (call on all ranks)."""
+        options = StateDictOptions(full_state_dict=True, broadcast_from_rank0=True)
+        set_optimizer_state_dict(self.model, optimizer, optim_state_dict, options=options)

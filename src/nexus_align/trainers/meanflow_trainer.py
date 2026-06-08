@@ -1,11 +1,12 @@
 """MeanFlow trainer: FSDP training on VAE latents with mixed precision, EMA, and checkpointing."""
 
 import os
-from contextlib import nullcontext
+from contextlib import contextmanager
 from omegaconf import OmegaConf
 
 import torch
 import torch.distributed as dist
+from torch.distributed.tensor import DTensor
 from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 
@@ -66,15 +67,23 @@ class MeanFlowTrainer(BaseTrainer):
     def backward(self, loss):
         self.scaler.scale(loss).backward()
 
+    @contextmanager
     def no_sync(self):
-        # FSDP reduce-scatters and accumulates sharded grads each micro-step
-        # (no_sync() is incompatible with use_orig_params=True).
-        return nullcontext()
+        # FSDP2: skip gradient reduce-scatter during accumulation; sync on the last micro-step.
+        self.model.model.set_requires_gradient_sync(False)
+        try:
+            yield
+        finally:
+            self.model.model.set_requires_gradient_sync(True)
 
     def clip_grad(self):
         if self.scaler.is_enabled():
             self.scaler.unscale_(self.optimizer)
-        grad_norm = self.model.model.clip_grad_norm_(self.train_cfg.max_grad_norm)
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            self.model.model.parameters(), self.train_cfg.max_grad_norm
+        )
+        if isinstance(grad_norm, DTensor):
+            grad_norm = grad_norm.full_tensor()  # DTensor norm is already global; gather to plain tensor
         self._grad_norm = grad_norm.detach()
 
     def optimizer_step(self):
