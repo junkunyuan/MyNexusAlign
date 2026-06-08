@@ -7,6 +7,10 @@ logs/
 # Data and model
 data_and_model/
 
+# Packages
+*.egg-info
+.venv
+
 # To-delete
 line-log/
 *.md
