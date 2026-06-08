@@ -42,12 +42,19 @@ class ImageNet1K(BaseTextImageDataset):
             sample_ratio=cfg_data.get("sample_ratio"),
             deduplicate=cfg_data.get("deduplicate", False),
         )
-        self.root = cfg_data.root
+        self.path = cfg_data.path
         self.split = cfg_data.get("split", "train")
         self.img_size = cfg_data.get("img_size", 256)
-        self.flip_prob = cfg_data.get("flip_prob", 0.5)
+        self.flip_prob = cfg_data.get("flip_prob", 0.)
         self.cache_dir = cfg_data.get("cache_dir")
         self.shared_cache = cfg_data.get("shared_cache", False)
+
+        # Get data files
+        search_file = os.path.join(self.path, "data", f"{self.split}-*.parquet")
+        self.files = sorted(glob.glob(search_file))
+
+        # Get classes
+        self.class_text = load_class_text(self.path)
 
         # VAE-latent preprocessing knobs, only used when the cache is built on the fly.
         self.vae = cfg_data.get("vae")
@@ -66,14 +73,10 @@ class ImageNet1K(BaseTextImageDataset):
     # --------------------------------------------------------------------------------
     def _init_raw_mode(self) -> None:
         self.mode = "raw"
-        self.files = split_files(self.root, self.split)
-        if not self.files:
-            raise FileNotFoundError(f"❌ No {self.split} parquet under {self.root}/data")
-        self.class_text = load_class_text(self.root)
 
         # Global index -> (file, row_group) via row-group boundaries (metadata only).
-        self._rg_starts: list[int] = []
-        self._rg_loc: list[tuple[int, int]] = []
+        self._rg_starts: list[int] = []  # start index of row-group
+        self._rg_loc: list[tuple[int, int]] = []  # (file index, in-file row-group index) of row group
         start = 0
         for fi, f in enumerate(self.files):
             meta = pq.ParquetFile(f).metadata
@@ -81,12 +84,14 @@ class ImageNet1K(BaseTextImageDataset):
                 self._rg_starts.append(start)
                 self._rg_loc.append((fi, rg))
                 start += meta.row_group(rg).num_rows
+        self.num_sample = start
 
         # Per-worker lazy caches (kept empty here so they survive DataLoader fork).
         self._pf_cache: dict[int, pq.ParquetFile] = {}
         self._rg_key: tuple[int, int] | None = None
         self._rg_table: pa.Table | None = None
-        self.build_indices(start)
+        
+        self.build_indices(self.num_sample)
 
     def _row_group(self, file_idx: int, rg_idx: int) -> pa.Table:
         """Read a parquet row group, caching the most recent one per worker."""
@@ -104,17 +109,20 @@ class ImageNet1K(BaseTextImageDataset):
         """Load raw data in raw mode."""
         if self.mode != "raw":
             raise RuntimeError("❌ get_raw is only available in raw mode (cache_dir unset)")
-        rg = bisect.bisect_right(self._rg_starts, index) - 1
-        file_idx, rg_idx = self._rg_loc[rg]
-        local = index - self._rg_starts[rg]
+        rg = bisect.bisect_right(self._rg_starts, index) - 1  # find the row group index
+        file_idx, rg_idx = self._rg_loc[rg]  # get the row group file and in-file row-group index
+        local = index - self._rg_starts[rg]  # in-group index
 
         table = self._row_group(file_idx, rg_idx)
-        img_struct = table.column("image")[local].as_py()
+        image_bytes = table.column("image")[local].as_py()["bytes"]
         label = table.column("label")[local].as_py()
-        image_bytes = img_struct["bytes"]
-        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        text = self.class_text[label] if self.class_text else None
-        return {"image": image, "image_bytes": image_bytes, "text": text, "label": label}
+        raw_data = {
+            "image": Image.open(io.BytesIO(image_bytes)).convert("RGB"),
+            "image_bytes": image_bytes,
+            "text": self.class_text[label] if self.class_text else None,
+            "label": label
+        }
+        return raw_data
 
     # --------------------------------------------------------------------------------
     # Latent mode: return (image VAE latent: float, label: int)
@@ -133,6 +141,7 @@ class ImageNet1K(BaseTextImageDataset):
             path = os.path.join(self.cache_dir, s["file"])
             self.shards.append((path, start))
             start += s["num_samples"]
+        self.num_sample = start
         self._shard_starts = [shard_start for _, shard_start in self.shards]
         self._handles: dict[str, Any] = {}  # per-worker lazy safe_open handles
         self.build_indices(start)
@@ -153,7 +162,6 @@ class ImageNet1K(BaseTextImageDataset):
         """Probe whether cache lives on a filesystem visible to every rank/node."""
         if not (dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1):
             return False  # single process: a "shared" cache is identical to a local one
-        os.makedirs(cache, exist_ok=True)
         probe = os.path.join(cache, f".probe-{run_id}")
         if dist.get_rank() == 0:
             open(probe, "w").close()
@@ -166,7 +174,7 @@ class ImageNet1K(BaseTextImageDataset):
                 break
             time.sleep(1.0)
         flag = torch.tensor([1 if seen else 0], device=device)
-        dist.all_reduce(flag, op=dist.ReduceOp.MIN)  # shared only if every rank saw the probe
+        dist.all_reduce(flag, op=dist.ReduceOp.MIN)
         if dist.get_rank() == 0:
             os.remove(probe)
         return bool(flag.item())
@@ -175,7 +183,7 @@ class ImageNet1K(BaseTextImageDataset):
         """
         Encode the parquet data to VAE latents and write a shard manifest.
 
-        Two layouts, selected by self.shared_cache (verified at runtime):
+        Two layouts, selected by self.shared_cache:
         - shared: all ranks across all nodes cooperate to build one cache on the
           shared path; global rank 0 writes the manifest.
         - local:  each node builds a complete cache on its own disk using that
@@ -191,7 +199,7 @@ class ImageNet1K(BaseTextImageDataset):
         cache = self.cache_dir
         os.makedirs(cache, exist_ok=True)
 
-        # Resolve the build-group layout: who cooperates on this cache directory.
+        # Resolve the build-group layout: who cooperates on this cache directory
         shared = self.shared_cache and self._verify_shared_cache(cache, run_id, device)
         if self.shared_cache and not shared:
             print("⚠️ shared_cache requested but the path is not visible to all nodes; "
@@ -226,8 +234,8 @@ class ImageNet1K(BaseTextImageDataset):
         vae = AutoencoderKL.from_pretrained(self.vae).to(device).eval()
 
         # Dataloader for parquet files
-        files = split_files(self.root, self.split)[rank::world]
-        stream = _ParquetImageStream(files, self.img_size, load_class_text(self.root), self.read_batch)
+        files = self.files[rank::world]
+        stream = _ParquetImageStream(files, self.img_size, self.class_text, self.read_batch)
         loader = torch.utils.data.DataLoader(
             stream, batch_size=self.vae_batch, num_workers=self.preprocess_workers, pin_memory=True
         )
@@ -235,8 +243,7 @@ class ImageNet1K(BaseTextImageDataset):
         # One progress bar per build group (driven by rank 0, tracking its own samples).
         bar = None
         if rank == 0:
-            total = sum(pq.ParquetFile(f).metadata.num_rows for f in files)
-            bar = TqdmBar(total, "🚀 Encoding latents", "img", rank="all")
+            bar = TqdmBar(self.num_sample, "🚀 Encoding latents", "img", rank="all")
 
         out_m, out_f, out_l, out_u = [], [], [], []
         state = {"count": 0, "shard": 0}
