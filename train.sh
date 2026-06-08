@@ -6,6 +6,14 @@ source /opt/tiger/junkun.yuan/junkun_tools/merlin/ENV.sh
 export PYTHONPATH="$(pwd)/src:$PYTHONPATH"
 export NCCL_DEBUG=WARN
 
+# Install the project and its dependencies if not already installed; skip otherwise.
+if pip show nexus-align >/dev/null 2>&1; then
+  echo "环境已安装,跳过安装"
+else
+  echo "安装环境..."
+  pip install -e .
+fi
+
 # torch 2.12 needs NCCL >= 2.28 (ships 2.29); the cluster's /opt/tiger/nccl is 2.27.7 and is
 # on LD_LIBRARY_PATH, so put torch's bundled NCCL first to avoid undefined-symbol import errors.
 NCCL_LIB="$(python -c 'import sysconfig, os; print(os.path.join(sysconfig.get_paths()["purelib"], "nvidia", "nccl", "lib"))')"
@@ -17,8 +25,6 @@ HDFS_SRC=${SG}junkun/data_and_model/open_source/ILSVRC
 
 if [[ -e "$LOCAL_DST" ]]; then
   echo "ImageNet 已存在,跳过下载: $LOCAL_DST"
-  pip install lmdb hydra-core
-  pip install pyinstrument
 else
   mkdir -p data_and_model
   hdfs dfs -get -t 1024 "$HDFS_SRC" "$LOCAL_DST"
