@@ -22,7 +22,7 @@ def prepare_env(cfg) -> None:
 
     # Update configs
     with open_dict(cfg):
-        if cfg.log.get(timestamp, True):
+        if cfg.log.get("timestamp", True):
             ts = [datetime.now().strftime("%Y%m%d-%H%M%S")]
             dist.broadcast_object_list(ts, src=0)
             cfg.log.exp_info = f"{cfg.log.exp_info}_{ts[0]}"
