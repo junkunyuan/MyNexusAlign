@@ -2,7 +2,7 @@ name: meanflow
 trainer: meanflow  # trainer registry key
 
 train:
-  train_batch_size: 2048
+  train_batch_size: 512
   grad_accu_step: 1
   shuffle: true
   drop_last: true
