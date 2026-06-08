@@ -253,7 +253,8 @@ class ImageNet1K(BaseTextImageDataset):
         # One progress bar per build group (driven by rank 0, tracking its own samples).
         bar = None
         if rank == 0:
-            bar = TqdmBar(self.num_sample, "🚀 Encoding latents", "img", rank="all")
+            num_local = sum(pq.ParquetFile(f).metadata.num_rows for f in files)
+            bar = TqdmBar(num_local, "🚀 Encoding latents", "img", rank="all")
 
         out_m, out_f, out_l, out_u = [], [], [], []
         state = {"count": 0, "shard": 0}
