@@ -8,8 +8,8 @@ sample_ratio: 1.0  # sampling ratio
 
 # VAE-latent preprocessing; not use VAE latent by setting cache_dir to null
 vae: ${common.data_and_model_dir}/stabilityai/sd-vae-ft-ema  # vae model path
-read_batch: 256  # parquet reading batch size
-vae_batch: 256  # vae encoding batch size
+read_batch: 512  # parquet reading batch size
+vae_batch: 512  # vae encoding batch size
 shard_size: 8192  # num items per shard to save
 preprocess_workers: 8  # num workers for preprocessing data
 cache_dir: ${common.data_and_model_dir}/ILSVRC/imagenet-1k/latents  # latent cache dir
