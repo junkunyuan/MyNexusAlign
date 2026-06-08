@@ -6,6 +6,11 @@ source /opt/tiger/junkun.yuan/junkun_tools/merlin/ENV.sh
 export PYTHONPATH="$(pwd)/src:$PYTHONPATH"
 export NCCL_DEBUG=WARN
 
+# torch 2.12 needs NCCL >= 2.28 (ships 2.29); the cluster's /opt/tiger/nccl is 2.27.7 and is
+# on LD_LIBRARY_PATH, so put torch's bundled NCCL first to avoid undefined-symbol import errors.
+NCCL_LIB="$(python -c 'import sysconfig, os; print(os.path.join(sysconfig.get_paths()["purelib"], "nvidia", "nccl", "lib"))')"
+export LD_LIBRARY_PATH="${NCCL_LIB}:${LD_LIBRARY_PATH}"
+
 mkdir -p data_and_model
 LOCAL_DST="data_and_model/ILSVRC"
 HDFS_SRC=${SG}junkun/data_and_model/open_source/ILSVRC

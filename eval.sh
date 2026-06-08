@@ -27,6 +27,11 @@ NPROC=${NPROC:-${ARNOLD_WORKER_GPU:-8}}
 cd "$(dirname "$0")"
 export PYTHONPATH="$(pwd)/src:${PYTHONPATH:-}"
 
+# torch 2.12 needs NCCL >= 2.28 (ships 2.29); the cluster's /opt/tiger/nccl is 2.27.7 and is
+# on LD_LIBRARY_PATH, so put torch's bundled NCCL first to avoid undefined-symbol import errors.
+NCCL_LIB="$(python -c 'import sysconfig, os; print(os.path.join(sysconfig.get_paths()["purelib"], "nvidia", "nccl", "lib"))')"
+export LD_LIBRARY_PATH="${NCCL_LIB}:${LD_LIBRARY_PATH:-}"
+
 # Unified entry point for all pre-downloaded data and model weights (HF naming).
 DATA_AND_MODEL_DIR=${DATA_AND_MODEL_DIR:-$(pwd)/data_and_model}
 FID_STATS=${FID_STATS:-$DATA_AND_MODEL_DIR/fid_stats/adm_in256_stats.npz}
