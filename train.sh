@@ -7,12 +7,18 @@ export PYTHONPATH="$(pwd)/src:$PYTHONPATH"
 export NCCL_DEBUG=WARN
 
 # Install the project and its dependencies if not already installed; skip otherwise.
-if pip show nexus-align >/dev/null 2>&1; then
+# if pip show nexus-align >/dev/null 2>&1; then
+if [ -d ".venv" ]; then
   echo "环境已安装,跳过安装"
+  source .venv/bin/activate
 else
   echo "安装环境..."
-  sudo pip install -e .
+  python -m venv .venv
+  source .venv/bin/activate
+  pip install -e .
 fi
+
+pip install -e .
 
 # Prepare data
 mkdir -p data_and_model
@@ -42,6 +48,10 @@ fi
 
 export NNODES=1
 export NODE_RANK=0
+
+# Arnold preloads an old /opt/tiger/nccl (2.27.7, no ncclCommResume) via LD_PRELOAD,
+# which shadows torch's bundled NCCL and breaks `import torch`. Drop it so torch uses its own.
+unset LD_PRELOAD
 
 torchrun \
     --nnodes ${NNODES} \
