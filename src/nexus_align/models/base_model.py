@@ -33,9 +33,9 @@ PARAM_DTYPE_MAP = {
 
 class BaseModel(ABC):
     """
-    Base model: builds a network, wraps it with FSDP, and maintains an EMA copy.
+    Base model: builds a model, wraps it with FSDP, and maintains an EMA copy.
 
-    Subclasses implement build_network() and wrap_modules(); __init__ then exposes
+    Subclasses implement build_model() and wrap_modules(); __init__ then exposes
     self.model (FSDP-wrapped, trainable) and self.ema (FSDP-wrapped, frozen).
     Both share the same sharding, so EMA updates run directly on local shards.
     """
@@ -44,21 +44,21 @@ class BaseModel(ABC):
         self.cfg_model = cfg_model
         self.device = torch.device("cuda", torch.cuda.current_device())
 
-        network = self.build_network()
+        model = self.build_model()
         model_dtype = PARAM_DTYPE_MAP[cfg_model.get("dtype", "fp32")]
         if model_dtype is not None:
-            network = network.to(model_dtype)
-        ema = deepcopy(network)
+            model = model.to(model_dtype)
+        ema = deepcopy(model)
         ema.requires_grad_(False)
 
-        self.model = self.fsdp_wrap(network, model_name="model")
+        self.model = self.fsdp_wrap(model, model_name="model")
         self.ema = self.fsdp_wrap(ema, model_name="ema")
         self.model.train()
         self.ema.eval()
 
     @abstractmethod
-    def build_network(self) -> nn.Module:
-        """Build and return the network module (before FSDP wrapping)."""
+    def build_model(self) -> nn.Module:
+        """Build and return the model module (before FSDP wrapping)."""
         ...
 
     @abstractmethod

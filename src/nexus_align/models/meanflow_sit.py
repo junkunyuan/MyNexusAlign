@@ -367,9 +367,9 @@ MeanFlowSiT_models = {
 # FSDP-Wrapped Model for Training
 # --------------------------------------------------------------------------------
 class MeanFlowSiTModel(BaseModel):
-    """MeanFlowSiT network wrapped by BaseModel: FSDP sharding plus an EMA copy."""
+    """MeanFlowSiT model wrapped by BaseModel: FSDP sharding plus an EMA copy."""
 
-    def build_network(self) -> nn.Module:
+    def build_model(self) -> nn.Module:
         return MeanFlowSiT_models[self.cfg_model.name](self.cfg_model)
 
     def wrap_modules(self) -> tuple:
