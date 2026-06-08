@@ -57,6 +57,7 @@ def run_eval(args, ckpt):
         "--compute-metrics",
         "--num-steps", str(args.num_steps),
         "--fid-statistics-file", args.fid_statistics_file,
+        "--data-and-model-dir", args.data_and_model_dir,
         "--global-seed", str(args.global_seed),
     ]
     print(f"\n>>> [step={parse_step(ckpt)}] {' '.join(cmd)}", flush=True)
@@ -167,7 +168,10 @@ def main():
     p.add_argument("--nproc-per-node", type=int, default=8)
     p.add_argument("--global-seed", type=int, default=0)
     p.add_argument("--sample-dir", type=str, default=None, help="default: <output-dir>/<exp-name>/eval")
-    p.add_argument("--fid-statistics-file", type=str, default="./fid_stats/adm_in256_stats.npz")
+    p.add_argument("--data-and-model-dir", type=str, default="./data_and_model",
+                   help="Unified dir holding VAE, Inception and FID stats (HF naming)")
+    p.add_argument("--fid-statistics-file", type=str, default=None,
+                   help="default: <data-and-model-dir>/fid_stats/adm_in256_stats.npz")
     p.add_argument("--results-dir", type=str, default=None, help="default: <output-dir>/<exp-name>/eval")
     p.add_argument("--min-step", type=int, default=0)
     p.add_argument("--max-step", type=int, default=None)
@@ -175,6 +179,11 @@ def main():
                    help="explicit ckpt paths; default: glob checkpoints/*.pt")
     p.add_argument("--dry-run", action="store_true", help="print plan, don't launch evaluate.py")
     args = p.parse_args()
+
+    if args.fid_statistics_file is None:
+        args.fid_statistics_file = os.path.join(
+            args.data_and_model_dir, "fid_stats/adm_in256_stats.npz"
+        )
 
     exp_dir = os.path.join(args.output_dir, args.exp_name)
     ckpt_dir = os.path.join(exp_dir, "checkpoints")

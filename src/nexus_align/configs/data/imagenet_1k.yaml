@@ -1,5 +1,5 @@
 name: imagenet-1k
-root: /opt/tiger/MyNexusAlign/data_and_model/ILSVRC/imagenet-1k
+root: ${common.data_and_model_dir}/ILSVRC/imagenet-1k
 split: train
 img_size: 256
 flip_prob: 0.5     # probability of returning horizontally-flipped moments
@@ -7,11 +7,11 @@ num_workers: 4
 sample_ratio: 1.0
 # Latent cache dir. If empty/missing, ImageNet1K builds it on first run (VAE-encode
 # the parquet data in-place), then loads latents. Set to null to read raw images.
-cache_dir: /opt/tiger/MyNexusAlign/data_and_model/ILSVRC/imagenet-1k/latents
+cache_dir: ${common.data_and_model_dir}/ILSVRC/imagenet-1k/latents
 shared_cache: false
 
 # VAE-latent preprocessing knobs (used only when the cache is built on the fly).
-vae: stabilityai/sd-vae-ft-ema
+vae: ${common.data_and_model_dir}/stabilityai/sd-vae-ft-ema
 read_batch: 256
 vae_batch: 256
 shard_size: 8192

@@ -12,18 +12,22 @@ from torch_fidelity.metric_fid import fid_features_to_statistics, fid_statistics
 from torch_fidelity.metric_isc import isc_features_to_metric
 
 
-def compute_metrics_with_cached_stats(img_folder, fid_stats_file, device, batch_size=64):
+def compute_metrics_with_cached_stats(img_folder, fid_stats_file, device, batch_size=64,
+                                      inception_weights_path=None):
     """FID (vs. precomputed reference stats) and IS for PNGs in img_folder.
 
     Runs the Inception-v3 extractor directly and feeds its outputs into
     torch_fidelity's stats-level helpers, sidestepping the installed
     calculate_metrics() which lacks a fid_statistics_file argument.
+
+    inception_weights_path loads local Inception weights; None downloads them.
     """
     img_paths = sorted(glob.glob(os.path.join(img_folder, "*.png")))
     assert img_paths, f"No PNGs found in {img_folder}"
 
     fe = FeatureExtractorInceptionV3(
-        "inception-v3-compat", ["2048", "logits_unbiased"]
+        "inception-v3-compat", ["2048", "logits_unbiased"],
+        feature_extractor_weights_path=inception_weights_path,
     ).to(device).eval()
 
     feats_2048, feats_logits = [], []

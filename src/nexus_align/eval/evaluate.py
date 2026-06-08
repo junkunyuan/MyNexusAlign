@@ -60,7 +60,8 @@ def main(args):
     model.load_state_dict(state_dict)
     model.eval()
 
-    vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema").to(device)
+    vae_path = os.path.join(args.data_and_model_dir, "stabilityai/sd-vae-ft-ema")
+    vae = AutoencoderKL.from_pretrained(vae_path).to(device)
     assert args.cfg_scale >= 1.0, "In almost all cases, cfg_scale should be >= 1.0"
 
     eval_fid_dir = os.path.join(args.sample_dir, sample_folder_name(args))
@@ -119,10 +120,14 @@ def main(args):
         assert args.fid_statistics_file and os.path.exists(args.fid_statistics_file), \
             f"FID stats file not found: {args.fid_statistics_file}"
 
+        inception_weights = os.path.join(
+            args.data_and_model_dir, "torch_fidelity/weights-inception-2015-12-05-6726825d.pth"
+        )
         metrics_dict = compute_metrics_with_cached_stats(
             img_folder=img_folder,
             fid_stats_file=args.fid_statistics_file,
             device=device,
+            inception_weights_path=inception_weights,
         )
         fid = metrics_dict.get("frechet_inception_distance")
         is_mean = metrics_dict.get("inception_score_mean")
@@ -157,6 +162,8 @@ def parse_args():
     p.add_argument("--cfg-scale", type=float, default=1.0)
     p.add_argument("--compute-metrics", action="store_true", help="Compute FID and IS after sampling")
     p.add_argument("--fid-statistics-file", type=str, default="", help="Path to FID statistics .npz")
+    p.add_argument("--data-and-model-dir", type=str, default="./data_and_model",
+                   help="Unified dir holding VAE and Inception weights (HF naming)")
     return p.parse_args()
 
 

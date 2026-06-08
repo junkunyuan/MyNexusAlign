@@ -10,7 +10,7 @@
 #   bash eval.sh --dry-run             # print plan, don't run
 #
 # Pre-downloaded weights (VAE + Inception + FID stats) live under data_and_model/
-# and are linked into the local HF/torch caches on first use, so eval runs offline.
+# and are loaded directly from there, so eval runs fully offline.
 set -euo pipefail
 
 EXP_NAME=${EXP_NAME:-default_20260607-213925}
@@ -23,39 +23,17 @@ NUM_STEPS=${NUM_STEPS:-1}
 NUM_FID_SAMPLES=${NUM_FID_SAMPLES:-50000}
 PER_PROC_BATCH=${PER_PROC_BATCH:-32}
 NPROC=${NPROC:-${ARNOLD_WORKER_GPU:-8}}
-FID_STATS=${FID_STATS:-./data_and_model/fid_stats/adm_in256_stats.npz}
 
 cd "$(dirname "$0")"
 export PYTHONPATH="$(pwd)/src:${PYTHONPATH:-}"
 
-# ---- Link offline model caches from data_and_model (idempotent) ---------------
-DM="$(pwd)/data_and_model"
-VAE_DIR="$HOME/.cache/huggingface/hub/models--stabilityai--sd-vae-ft-ema"
-INCEPTION_FILE="$HOME/.cache/torch/hub/checkpoints/weights-inception-2015-12-05-6726825d.pth"
-
-# VAE: link the local snapshot into the HF hub cache for offline from_pretrained.
-if compgen -G "$VAE_DIR/snapshots/*/diffusion_pytorch_model.safetensors" > /dev/null; then
-    echo "[skip] sd-vae-ft-ema already cached at $VAE_DIR"
-else
-    echo "[link] sd-vae-ft-ema from $DM/stabilityai/sd-vae-ft-ema"
-    mkdir -p "$VAE_DIR/snapshots/local" "$VAE_DIR/refs"
-    ln -sfn "$DM/stabilityai/sd-vae-ft-ema"/* "$VAE_DIR/snapshots/local/"
-    echo local > "$VAE_DIR/refs/main"
-fi
-
-# Inception (torch_fidelity): link the single .pth into the torch hub cache.
-if [[ -s "$INCEPTION_FILE" ]]; then
-    echo "[skip] inception weights already cached at $INCEPTION_FILE"
-else
-    echo "[link] inception weights from $DM/torch_fidelity"
-    mkdir -p "$(dirname "$INCEPTION_FILE")"
-    ln -sfn "$DM/torch_fidelity/weights-inception-2015-12-05-6726825d.pth" "$INCEPTION_FILE"
-fi
+# Unified entry point for all pre-downloaded data and model weights (HF naming).
+DATA_AND_MODEL_DIR=${DATA_AND_MODEL_DIR:-$(pwd)/data_and_model}
+FID_STATS=${FID_STATS:-$DATA_AND_MODEL_DIR/fid_stats/adm_in256_stats.npz}
 
 # Force offline mode so HF/transformers never reach the network even if available.
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-# -------------------------------------------------------------------------------
 
 python -m nexus_align.eval.eval_all \
     --exp-name "$EXP_NAME" \
@@ -68,4 +46,5 @@ python -m nexus_align.eval.eval_all \
     --per-proc-batch-size "$PER_PROC_BATCH" \
     --nproc-per-node "$NPROC" \
     --fid-statistics-file "$FID_STATS" \
+    --data-and-model-dir "$DATA_AND_MODEL_DIR" \
     "$@"
