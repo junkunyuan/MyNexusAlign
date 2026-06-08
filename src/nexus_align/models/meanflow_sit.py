@@ -37,9 +37,9 @@ class MeanFlowSiT(nn.Module):
         class_dropout_prob: float = 0.1,
     ) -> None:
         super().__init__()
-        input_size = cfg.model.get("resolution", 256) // 8
-        num_classes = cfg.model.get("num_classes", 1000)
-        use_cfg = cfg.model.get("cfg_prob", 0) > 0
+        input_size = cfg.get("resolution", 256) // 8
+        num_classes = cfg.get("num_classes", 1000)
+        use_cfg = cfg.get("cfg_prob", 0) > 0
         self.in_channels = in_channels
         self.out_channels = in_channels
         self.patch_size = patch_size
@@ -370,7 +370,7 @@ class MeanFlowSiTModel(BaseModel):
     """MeanFlowSiT network wrapped by BaseModel: FSDP sharding plus an EMA copy."""
 
     def build_network(self) -> nn.Module:
-        return MeanFlowSiT_models[self.cfg.model.name](self.cfg)
+        return MeanFlowSiT_models[self.cfg.name](self.cfg)
 
     def wrap_modules(self) -> tuple:
         return (SiTBlock,)

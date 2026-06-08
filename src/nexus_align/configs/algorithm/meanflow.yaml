@@ -14,7 +14,6 @@ train:
   adam_epsilon: 1.0e-8
   max_grad_norm: 1.0
   ema_decay: 0.9
-  mixed_precision: bf16  # "no", "fp16", or "bf16"
   checkpointing_steps: 100
   resume_step: 0  # >0 resumes from checkpoints/{resume_step:07d}.pt
 

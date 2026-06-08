@@ -13,7 +13,7 @@
 # and are loaded directly from there, so eval runs fully offline.
 set -euo pipefail
 
-EXP_NAME=${EXP_NAME:-default_20260607-213925}
+EXP_NAME=${EXP_NAME:-default_20260608-061936}
 OUTPUT_DIR=${OUTPUT_DIR:-logs}
 MODEL=${MODEL:-MeanFlowSiT-L/2}
 RESOLUTION=${RESOLUTION:-256}

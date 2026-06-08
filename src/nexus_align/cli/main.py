@@ -20,7 +20,7 @@ def main(cfg):
     print("✅ Prepared training dataset")
 
     # 2. Prepare model
-    model = registry.get("model", cfg.model.name)(cfg)
+    model = registry.get("model", cfg.model.name)(cfg.model)
     print("✅ Prepared model")
 
     # 3. Prepare algorithm

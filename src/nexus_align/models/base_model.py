@@ -1,10 +1,7 @@
-"""Base model: generic FSDP wrapping and EMA maintenance for models.
+"""Base model: generic FSDP wrapping and EMA maintenance for models."""
 
-FSDP wrapper reference: https://github.com/junkunyuan/NexusAlign/blob/master/src/nexus_align
-"""
-
-from abc import ABC, abstractmethod
 from copy import deepcopy
+from abc import ABC, abstractmethod
 
 import torch
 import torch.nn as nn
@@ -26,7 +23,12 @@ SHARDING_STRATEGY_MAP = {
     "hybrid_shard": ShardingStrategy.HYBRID_SHARD,
 }
 
-PARAM_DTYPE_MAP = {"no": None, "fp16": torch.float16, "bf16": torch.bfloat16}
+PARAM_DTYPE_MAP = {
+    "no": None,
+    "fp32": torch.float32,
+    "fp16": torch.float16,
+    "bf16": torch.bfloat16,
+}
 
 
 class BaseModel(ABC):
@@ -43,6 +45,9 @@ class BaseModel(ABC):
         self.device = torch.device("cuda", torch.cuda.current_device())
 
         network = self.build_network()
+        model_dtype = PARAM_DTYPE_MAP[cfg.get("dtype", "fp32")]
+        if model_dtype is not None:
+            network = network.to(model_dtype)
         ema = deepcopy(network)
         ema.requires_grad_(False)
 
@@ -63,7 +68,7 @@ class BaseModel(ABC):
 
     def fsdp_wrap(self, module: nn.Module, model_name: str = "model") -> FSDP:
         """Wrap a module with torch FSDP (Fully Sharded Data Parallel)."""
-        fsdp_cfg = self.cfg.model.fsdp
+        fsdp_cfg = self.cfg.fsdp
         strategy = fsdp_cfg.get("strategy", "full_shard")
         if strategy not in SHARDING_STRATEGY_MAP:
             raise ValueError(f"❌ Invalid FSDP sharding strategy: {strategy}")
@@ -76,12 +81,18 @@ class BaseModel(ABC):
                 return True
             return any(isinstance(module, m) for m in wrap_modules)
 
-        param_dtype = PARAM_DTYPE_MAP[self.cfg.algorithm.train.mixed_precision]
-        mixed_precision = (
-            MixedPrecision(param_dtype=param_dtype, buffer_dtype=param_dtype)
-            if param_dtype is not None
-            else None
-        )
+        # param_dtype is the compute dtype; reduce defaults to fp32, buffer follows param.
+        param_dtype = PARAM_DTYPE_MAP[fsdp_cfg.get("param_dtype", "bf16")]
+        reduce_dtype = buffer_dtype = None
+        if param_dtype is None:
+            mixed_precision = None
+        else:
+            reduce_dtype = PARAM_DTYPE_MAP[fsdp_cfg.get("reduce_dtype", "fp32")]
+            buffer_key = fsdp_cfg.get("buffer_dtype", None)
+            buffer_dtype = PARAM_DTYPE_MAP[buffer_key] if buffer_key is not None else param_dtype
+            mixed_precision = MixedPrecision(
+                param_dtype=param_dtype, reduce_dtype=reduce_dtype, buffer_dtype=buffer_dtype
+            )
 
         module = FSDP(
             module,
@@ -99,7 +110,7 @@ class BaseModel(ABC):
         info += [f"    Total params: {total_params:.4f} B"]
         info += [f"    Strategy: {strategy}"]
         info += [f"    Wrapped modules: {', '.join(m.__name__ for m in wrap_modules)}"]
-        info += [f"    Param dtype: {param_dtype}"]
+        info += [f"    Param/Reduce/Buffer dtype: {param_dtype} / {reduce_dtype} / {buffer_dtype}"]
         info += [f"    CPU offload: {cpu_offload}"]
         print("\n".join(info))
 

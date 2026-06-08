@@ -47,13 +47,11 @@ def main(args):
 
     # Build the raw network (no FSDP wrapping) and load the EMA weights.
     latent_size = args.resolution // 8
-    # cfg_prob > 0 enables CFG (the model factory reads cfg.model.cfg_prob).
+    # cfg_prob > 0 enables CFG (the model factory reads cfg.cfg_prob).
     cfg = OmegaConf.create({
-        "model": {
-            "resolution": args.resolution,
-            "num_classes": args.num_classes,
-            "cfg_prob": 1.0,
-        }
+        "resolution": args.resolution,
+        "num_classes": args.num_classes,
+        "cfg_prob": 1.0,
     })
     model = MeanFlowSiT_models[args.model](cfg).to(device)
     state_dict = torch.load(args.ckpt, map_location=device)["ema"]

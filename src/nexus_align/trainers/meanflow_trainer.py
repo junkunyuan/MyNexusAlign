@@ -31,7 +31,7 @@ class MeanFlowTrainer(BaseTrainer):
         )
 
         # Mixed precision is handled by FSDP (see BaseModel); only fp16 needs a scaler.
-        self.scaler = ShardedGradScaler(enabled=(train_cfg.mixed_precision == "fp16"))
+        self.scaler = ShardedGradScaler(enabled=(cfg.model.fsdp.get("param_dtype", "bf16") == "fp16"))
 
         # VAE latent normalization (trick from IMM).
         self.latents_scale = torch.tensor([0.18215, 0.18215, 0.18215, 0.18215]).view(1, 4, 1, 1).to(device)
