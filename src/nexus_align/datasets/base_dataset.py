@@ -1,35 +1,25 @@
 """Base dataset: generic dataset."""
 
-import random
-import hashlib
-from typing import Any, TypeVar
+from typing import Any
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
 import torch
 from torch.utils.data import Dataset
 
-T = TypeVar("T")
-
-
-def sample_items(items: list[T], sample_ratio: float | int | None = None) -> list[T]:
-    """
-    Randomly subsample items.
-
-    If sample_ratio<=0, keeps all.
-    If sample_ratio<=1, sample the specific fraction.
-    Else, sample the specific count.
-    """
-    n = len(items)
-    if not isinstance(sample_ratio, (int, float)) or sample_ratio <= 0 or n == 0:
-        return items
-    k = min(int(n * sample_ratio if sample_ratio < 1.1 else sample_ratio), n)
-    return random.sample(items, k)
+from .utils import sample_items, compute_md5
 
 
 class BaseTextImageDataset(Dataset, ABC):
     """
-    Base dataset with image + text + label.
+    Abstract base for image + text + label datasets.
+
+    Subclasses implement get_raw to return one raw sample.
+    
+    Optionally deduplicate (by md5 uid over image bytes + text + label).
+    Apply random sampling by sample_ratio when calling build_indices.
+    Apply image/text transforms in __getitem__.
+    Provide collate_fn to batch samples.
     """
 
     def __init__(
@@ -37,13 +27,13 @@ class BaseTextImageDataset(Dataset, ABC):
         image_transform: Callable | None = None,
         text_transform: Callable | None = None,
         sample_ratio: float | int | None = None,
-        dedup: bool = False,
+        deduplicate: bool = False,
     ) -> None:
         self.image_transform = image_transform
         self.text_transform = text_transform
         self.sample_ratio = sample_ratio
-        self.dedup = dedup
-        self._indices = None  # Built by build_indices(); maps dataset indices to raw sample indices
+        self.deduplicate = deduplicate
+        self._indices = None  # built by build_indices; maps dataset indices to raw sample indices
 
     @abstractmethod
     def get_raw(self, index: int) -> dict[str, Any]:
@@ -52,7 +42,7 @@ class BaseTextImageDataset(Dataset, ABC):
 
     def build_indices(self, num_items: int) -> None:
         """Build the active index from num_items, dropping duplicate uids then sampling."""
-        if self.dedup:
+        if self.deduplicate:
             seen = set()
             indices = []
             for i in range(num_items):
@@ -67,28 +57,17 @@ class BaseTextImageDataset(Dataset, ABC):
     def __len__(self) -> int:
         return len(self._indices)
 
-    @staticmethod
-    def compute_md5(
-        image_bytes: bytes | None = None,
-        text: str | None = None,
-        label: int | None = None,
-    ) -> str:
-        """Hash available content into a stable hex md5 identifier."""
-        h = hashlib.md5()
-        if image_bytes is not None:
-            h.update(image_bytes)
-        if text is not None:
-            h.update(text.encode("utf-8"))
-        if label is not None:
-            h.update(str(label).encode("utf-8"))
-        return h.hexdigest()
-
     def get_uid(self, raw: dict[str, Any]) -> str:
         """Calculate uid of a raw sample dict (image bytes + text + label)."""
         image, image_bytes = raw.get("image"), raw.get("image_bytes")
         if image_bytes is None and image is not None:
             image_bytes = image.tobytes()
-        return self.compute_md5(image_bytes=image_bytes, text=raw.get("text"), label=raw.get("label"))
+        uid = compute_md5(
+            image_bytes=image_bytes,
+            text=raw.get("text"),
+            label=raw.get("label")
+        )
+        return uid
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         # Get image, text, label, and uid

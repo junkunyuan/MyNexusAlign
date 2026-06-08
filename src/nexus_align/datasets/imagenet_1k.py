@@ -19,6 +19,7 @@ from safetensors import safe_open
 
 from nexus_align.utils.progress import TqdmBar
 from nexus_align.datasets.base_dataset import BaseTextImageDataset
+from nexus_align.datasets.utils import compute_md5
 
 NUM_CLASSES = 1000
 
@@ -34,27 +35,26 @@ class ImageNet1K(BaseTextImageDataset):
       (moments, label), with horizontal flip served from cached flipped latents.
     """
 
-    def __init__(self, cfg) -> None:
-        data = cfg.data
+    def __init__(self, cfg_data) -> None:
         super().__init__(
             image_transform=None,
             text_transform=None,
-            sample_ratio=data.get("sample_ratio"),
-            dedup=data.get("dedup", False),
+            sample_ratio=cfg_data.get("sample_ratio"),
+            deduplicate=cfg_data.get("deduplicate", False),
         )
-        self.root = data.root
-        self.split = data.get("split", "train")
-        self.img_size = data.get("img_size", 256)
-        self.flip_prob = data.get("flip_prob", 0.5)
-        self.cache_dir = data.get("cache_dir")
-        self.shared_cache = data.get("shared_cache", False)
+        self.root = cfg_data.root
+        self.split = cfg_data.get("split", "train")
+        self.img_size = cfg_data.get("img_size", 256)
+        self.flip_prob = cfg_data.get("flip_prob", 0.5)
+        self.cache_dir = cfg_data.get("cache_dir")
+        self.shared_cache = cfg_data.get("shared_cache", False)
 
         # VAE-latent preprocessing knobs, only used when the cache is built on the fly.
-        self.vae = data.get("vae")
-        self.read_batch = data.get("read_batch", 256)
-        self.vae_batch = data.get("vae_batch", 256)
-        self.shard_size = data.get("shard_size", 8192)
-        self.preprocess_workers = data.get("preprocess_workers", 8)
+        self.vae = cfg_data.get("vae")
+        self.read_batch = cfg_data.get("read_batch", 256)
+        self.vae_batch = cfg_data.get("vae_batch", 256)
+        self.shard_size = cfg_data.get("shard_size", 8192)
+        self.preprocess_workers = cfg_data.get("preprocess_workers", 8)
 
         if self.cache_dir is not None:
             self._init_latent_mode()
@@ -415,6 +415,6 @@ class _ParquetImageStream(torch.utils.data.IterableDataset):
                     image_bytes = img_struct["bytes"]
                     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
                     text = self.class_text[label] if self.class_text else None
-                    uid = BaseTextImageDataset.compute_md5(image_bytes=image_bytes, text=text, label=label)
+                    uid = compute_md5(image_bytes=image_bytes, text=text, label=label)
                     uid_arr = np.frombuffer(bytes.fromhex(uid), dtype=np.uint8).copy()
                     yield transform(image), label, uid_arr
