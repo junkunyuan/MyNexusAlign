@@ -1,16 +1,16 @@
-name: imagenet-1k
-path: ${common.data_and_model_dir}/ILSVRC/imagenet-1k
-split: train
-img_size: 256
-flip_prob: 0.5
-num_workers: 8
-sample_ratio: 1.0
+name: imagenet-1k  # dataset name
+path: ${common.data_and_model_dir}/ILSVRC/imagenet-1k  # huggingface data path
+split: train  # use training data
+img_size: 256  # image size
+flip_prob: 0.5  # horizontal flip probability
+num_workers: 8  # num workers for data loading
+sample_ratio: 1.0  # sampling ratio
 
 # VAE-latent preprocessing; not use VAE latent by setting cache_dir to null
-vae: ${common.data_and_model_dir}/stabilityai/sd-vae-ft-ema
-read_batch: 256
-vae_batch: 256
-shard_size: 8192
-preprocess_workers: 8
+vae: ${common.data_and_model_dir}/stabilityai/sd-vae-ft-ema  # vae model path
+read_batch: 256  # parquet reading batch size
+vae_batch: 256  # vae encoding batch size
+shard_size: 8192  # num items per shard to save
+preprocess_workers: 8  # num workers for preprocessing data
 cache_dir: ${common.data_and_model_dir}/ILSVRC/imagenet-1k/latents  # latent cache dir
 shared_cache: false  # if all nodes can access the same cache_dir path
