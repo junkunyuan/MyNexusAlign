@@ -144,7 +144,17 @@ class ImageNet1K(BaseTextImageDataset):
         self.num_sample = start
         self._shard_starts = [shard_start for _, shard_start in self.shards]
         self._handles: dict[str, Any] = {}  # per-worker lazy safe_open handles
-        self.build_indices(start)
+        uids = self._cached_uids() if self.deduplicate else None
+        self.build_indices(start, uids=uids)
+
+    def _cached_uids(self) -> list[bytes]:
+        """Per-sample uids stored in the cache (md5 over pre-VAE image bytes + text + label)."""
+        uids = []
+        for path, _ in self.shards:
+            with safe_open(path, framework="pt") as f:
+                arr = f.get_tensor("uid")  # (n, 16) uint8
+            uids.extend(bytes(row.tolist()) for row in arr)
+        return uids
 
     def _load_manifest(self) -> dict[str, Any] | None:
         """Return the manifest if a complete cache exists for this split, else None."""

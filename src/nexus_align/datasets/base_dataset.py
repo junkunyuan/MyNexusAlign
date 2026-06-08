@@ -2,7 +2,7 @@
 
 from typing import Any
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 import torch
 from torch.utils.data import Dataset
@@ -40,13 +40,16 @@ class BaseTextImageDataset(Dataset, ABC):
         """Return a raw sample dict with "image", "text", "label"."""
         ...
 
-    def build_indices(self, num_items: int) -> None:
-        """Build the active index from num_items, dropping duplicate uids then sampling."""
+    def build_indices(self, num_items: int, uids: Iterable[Any] | None = None) -> None:
+        """Build the active index: drop duplicate uids then sample.
+
+        uids: a precomputed uid per item; if None, derive from get_raw (raw mode).
+        """
         if self.deduplicate:
-            seen = set()
-            indices = []
-            for i in range(num_items):
-                uid = self.get_uid(self.get_raw(i))
+            if uids is None:
+                uids = (self.get_uid(self.get_raw(i)) for i in range(num_items))
+            seen, indices = set(), []
+            for i, uid in enumerate(uids):
                 if uid not in seen:
                     seen.add(uid)
                     indices.append(i)
